@@ -53,53 +53,8 @@ class CpuFeatures {
   //! Advanced Vector Extensions 2
   static bool AVX2(void);
 
-  //! AVX-512 Foundation
-  static bool AVX512F(void);
 
-  //! AVX-512 DQ (Double/Quad granular) Instructions
-  static bool AVX512DQ(void);
 
-  //! AVX-512 Prefetch
-  static bool AVX512PF(void);
-
-  //! AVX-512 Exponential and Reciprocal
-  static bool AVX512ER(void);
-
-  //! AVX-512 Conflict Detection
-  static bool AVX512CD(void);
-
-  //! AVX-512 BW (Byte/Word granular) Instructions
-  static bool AVX512BW(void);
-
-  //! AVX-512 VL (128/256 Vector Length) Extensions
-  static bool AVX512VL(void);
-
-  //! AVX-512 Integer Fused Multiply-Add instructions
-  static bool AVX512_IFMA(void);
-
-  //! AVX512 Vector Bit Manipulation instructions
-  static bool AVX512_VBMI(void);
-
-  //! Additional AVX512 Vector Bit Manipulation Instructions
-  static bool AVX512_VBMI2(void);
-
-  //! Vector Neural Network Instructions
-  static bool AVX512_VNNI(void);
-
-  //! Support for VPOPCNT[B,W] and VPSHUF-BITQMB instructions
-  static bool AVX512_BITALG(void);
-
-  //! POPCNT for vectors of DW/QW
-  static bool AVX512_VPOPCNTDQ(void);
-
-  //! AVX-512 Neural Network Instructions
-  static bool AVX512_4VNNIW(void);
-
-  //! AVX-512 Multiply Accumulation Single precision
-  static bool AVX512_4FMAPS(void);
-
-  //! AVX-512 FP16 instructions
-  static bool AVX512_FP16(void);
 
   //! CMPXCHG8 instruction
   static bool CX8(void);
@@ -233,53 +188,7 @@ class CpuFeatures {
     //! Advanced Vector Extensions 2
     bool AVX2 = CpuFeatures::AVX2();
 
-    //! AVX-512 Foundation
-    bool AVX512F = CpuFeatures::AVX512F();
-
-    //! AVX-512 DQ (Double/Quad granular) Instructions
-    bool AVX512DQ = CpuFeatures::AVX512DQ();
-
-    //! AVX-512 Prefetch
-    bool AVX512PF = CpuFeatures::AVX512PF();
-
-    //! AVX-512 Exponential and Reciprocal
-    bool AVX512ER = CpuFeatures::AVX512ER();
-
-    //! AVX-512 Conflict Detection
-    bool AVX512CD = CpuFeatures::AVX512CD();
-
-    //! AVX-512 BW (Byte/Word granular) Instructions
-    bool AVX512BW = CpuFeatures::AVX512BW();
-
-    //! AVX-512 VL (128/256 Vector Length) Extensions
-    bool AVX512VL = CpuFeatures::AVX512VL();
-
-    //! AVX-512 Integer Fused Multiply-Add instructions
-    bool AVX512_IFMA = CpuFeatures::AVX512_IFMA();
-
-    //! AVX512 Vector Bit Manipulation instructions
-    bool AVX512_VBMI = CpuFeatures::AVX512_VBMI();
-
-    //! Additional AVX512 Vector Bit Manipulation Instructions
-    bool AVX512_VBMI2 = CpuFeatures::AVX512_VBMI2();
-
-    //! Vector Neural Network Instructions
-    bool AVX512_VNNI = CpuFeatures::AVX512_VNNI();
-
-    //! Support for VPOPCNT[B,W] and VPSHUF-BITQMB instructions
-    bool AVX512_BITALG = CpuFeatures::AVX512_BITALG();
-
-    //! POPCNT for vectors of DW/QW
-    bool AVX512_VPOPCNTDQ = CpuFeatures::AVX512_VPOPCNTDQ();
-
-    //! AVX-512 Neural Network Instructions
-    bool AVX512_4VNNIW = CpuFeatures::AVX512_4VNNIW();
-
-    //! AVX-512 Multiply Accumulation Single precision
-    bool AVX512_4FMAPS = CpuFeatures::AVX512_4FMAPS();
-
-    //! AVX-512 FP16 instructions
-    bool AVX512_FP16 = CpuFeatures::AVX512_FP16();
+    //!
 
     //! CMPXCHG8 instruction
     bool CX8 = CpuFeatures::CX8();

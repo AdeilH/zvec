@@ -21,7 +21,7 @@ namespace ailego {
 
 #define ACCUM_FP32_STEP_SSE SSD_FP32_SSE
 #define ACCUM_FP32_STEP_AVX SSD_FP32_AVX
-#define ACCUM_FP32_STEP_AVX512 SSD_FP32_AVX512
+// #define ACCUM_FP32_STEP_AVX512 SSD_FP32_AVX512
 #define ACCUM_FP32_STEP_NEON SSD_FP32_NEON
 
 //! Calculate sum of squared difference (GENERAL)
@@ -46,11 +46,11 @@ namespace ailego {
   }
 
 //! Calculate sum of squared difference (AVX512)
-#define SSD_FP32_AVX512(zmm_m, zmm_q, zmm_sum)        \
-  {                                                   \
-    __m512 zmm_d = _mm512_sub_ps(zmm_m, zmm_q);       \
-    zmm_sum = _mm512_fmadd_ps(zmm_d, zmm_d, zmm_sum); \
-  }
+// #define SSD_FP32_AVX512(zmm_m, zmm_q, zmm_sum)        \
+//   {                                                   \
+//     __m512 zmm_d = _mm512_sub_ps(zmm_m, zmm_q);       \
+//     zmm_sum = _mm512_fmadd_ps(zmm_d, zmm_d, zmm_sum); \
+//   }
 
 //! Calculate sum of squared difference (NEON)
 #define SSD_FP32_NEON(v_m, v_q, v_sum)     \

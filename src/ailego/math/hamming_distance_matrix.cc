@@ -68,7 +68,7 @@ namespace ailego {
 #define HAMMING_UINT64_STEP2_AVX(ymm_m, ymm_q, ymm_sum) \
   ymm_sum = _mm256_add_epi64(                           \
       VerticalPopCount_INT64_V256(_mm256_xor_si256(ymm_m, ymm_q)), ymm_sum);
-
+#undef __AVX512VL__
 #if defined(__AVX512VL__) && defined(__AVX512DQ__)
 #define CONVERT_UINT64_TO_FP32(v, ...) _mm256_cvtepu64_ps(v)
 #elif defined(__AVX2__)

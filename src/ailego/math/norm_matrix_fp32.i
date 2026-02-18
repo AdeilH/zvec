@@ -117,44 +117,6 @@
   *out = _NORM(result);
 
 //! Compute the norm of vectors (FP32, M=1)
-#define NORM_FP32_1_AVX512(m, dim, out, _NORM)                          \
-  MATRIX_VAR_INIT(1, 2, __m512, zmm_sum, _mm512_setzero_ps())           \
-  const float *last = m + dim;                                          \
-  const float *last_aligned = m + ((dim >> 5) << 5);                    \
-  if (((uintptr_t)m & 0x3f) == 0) {                                     \
-    for (; m != last_aligned; m += 32) {                                \
-      __m512 zmm_m_0 = _mm512_load_ps(m + 0);                           \
-      NORM_FP32_STEP_AVX512(zmm_m_0, zmm_sum_0_0)                       \
-      __m512 zmm_m_1 = _mm512_load_ps(m + 16);                          \
-      NORM_FP32_STEP_AVX512(zmm_m_1, zmm_sum_0_1)                       \
-    }                                                                   \
-    if (last >= last_aligned + 16) {                                    \
-      __m512 zmm_m = _mm512_load_ps(m);                                 \
-      NORM_FP32_STEP_AVX512(zmm_m, zmm_sum_0_0)                         \
-      m += 16;                                                          \
-    }                                                                   \
-  } else {                                                              \
-    for (; m != last_aligned; m += 32) {                                \
-      __m512 zmm_m_0 = _mm512_loadu_ps(m + 0);                          \
-      NORM_FP32_STEP_AVX512(zmm_m_0, zmm_sum_0_0)                       \
-      __m512 zmm_m_1 = _mm512_loadu_ps(m + 16);                         \
-      NORM_FP32_STEP_AVX512(zmm_m_1, zmm_sum_0_1)                       \
-    }                                                                   \
-    if (last >= last_aligned + 16) {                                    \
-      __m512 zmm_m = _mm512_loadu_ps(m);                                \
-      NORM_FP32_STEP_AVX512(zmm_m, zmm_sum_0_0)                         \
-      m += 16;                                                          \
-    }                                                                   \
-  }                                                                     \
-  if (m != last) {                                                      \
-    __mmask16 mask = (__mmask16)((1 << (last - m)) - 1);                \
-    __m512 zmm_m = _mm512_mask_loadu_ps(_mm512_setzero_ps(), mask, m);  \
-    NORM_FP32_STEP_AVX512(zmm_m, zmm_sum_0_0)                           \
-  }                                                                     \
-  float result =                                                        \
-      HorizontalAdd_FP32_V512(_mm512_add_ps(zmm_sum_0_0, zmm_sum_0_1)); \
-  *out = _NORM(result);
-
 //! Compute the norm of vectors (FP32, M=1)
 #define NORM_FP32_1_NEON(m, dim, out, _NORM)                  \
   MATRIX_VAR_INIT(1, 2, float32x4_t, v_sum, vdupq_n_f32(0))   \

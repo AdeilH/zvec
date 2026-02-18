@@ -17,12 +17,16 @@
 namespace zvec {
 namespace ailego {
 
+#undef __AVX512VL__
+#undef __AVX512BITALG__
+
 //! Absolute value of a float
 static inline float FastAbs(float x) {
   uint32_t *p = reinterpret_cast<uint32_t *>(&x);
   *p &= 0x7fffffffu;
   return *reinterpret_cast<float *>(p);
 }
+
 
 #if defined(__SSE__)
 static inline float HorizontalMax_FP32_V128(__m128 v) {

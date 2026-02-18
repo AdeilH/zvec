@@ -21,6 +21,7 @@ namespace ailego {
 #define ACCUM_INT8_STEP_SSE FMA_INT8_SSE
 #define ACCUM_INT8_STEP_AVX FMA_INT8_AVX
 
+#undef __AVX512F__
 #if defined(__AVX512F__) && !defined(__AVX512DQ__)
 #define _mm512_xor_ps(a, b) \
   _mm512_castsi512_ps(      \
@@ -35,9 +36,9 @@ static const __m128 NEGZEROS_FP32_SSE = _mm_set1_ps(-0.0f);
 static const __m256 NEGZEROS_FP32_AVX = _mm256_set1_ps(-0.0f);
 #endif  // __AVX__
 
-#if defined(__AVX512F__)
-static const __m512 NEGZEROS_FP32_AVX512 = _mm512_set1_ps(-0.0f);
-#endif  // __AVX512F__
+// #if defined(__AVX512F__)
+// static const __m512 NEGZEROS_FP32_AVX512 = _mm512_set1_ps(-0.0f);
+// #endif  // __AVX512F__
 
 #if defined(__SSE4_1__)
 static const __m128i ONES_INT16_SSE = _mm_set1_epi32(0x00010001);
@@ -56,8 +57,8 @@ static const __m256i ONES_INT16_AVX = _mm256_set1_epi32(0x00010001);
   _mm256_xor_ps(_mm256_cvtepi32_ps(v), NEGZEROS_FP32_AVX)
 
 //! Reverse sign of value (AVX512)
-#define NEGATE_FP32_AVX512(v, ...) \
-  _mm512_xor_ps(_mm512_cvtepi32_ps(v), NEGZEROS_FP32_AVX512)
+// #define NEGATE_FP32_AVX512(v, ...) \
+//   _mm512_xor_ps(_mm512_cvtepi32_ps(v), NEGZEROS_FP32_AVX512)
 
 //! Calculate Fused-Multiply-Add (GENERAL)
 #define FMA_INT8_GENERAL(m, q, sum) sum += static_cast<float>(m * q);

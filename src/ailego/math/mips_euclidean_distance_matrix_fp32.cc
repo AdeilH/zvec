@@ -27,10 +27,10 @@ namespace ailego {
   }
 
 //! Calculate Fused-Multiply-Add (AVX512)
-#define FMA_FP32_AVX512(zmm_m, zmm_q, zmm_sum) \
-  zmm_sum = _mm512_fmadd_ps(zmm_m, zmm_q, zmm_sum);
-#define FMA_MASK_FP32_AVX512(zmm_m, zmm_q, zmm_sum, mask) \
-  zmm_sum = _mm512_mask3_fmadd_ps(zmm_m, zmm_q, zmm_sum, mask);
+// #define FMA_FP32_AVX512(zmm_m, zmm_q, zmm_sum) \
+//   zmm_sum = _mm512_fmadd_ps(zmm_m, zmm_q, zmm_sum);
+// #define FMA_MASK_FP32_AVX512(zmm_m, zmm_q, zmm_sum, mask) \
+//   zmm_sum = _mm512_mask3_fmadd_ps(zmm_m, zmm_q, zmm_sum, mask);
 
 #if defined(__ARM_NEON)
 //! Compute the Inner Product between p and q, and each Squared L2-Norm value

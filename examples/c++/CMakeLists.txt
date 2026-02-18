@@ -7,9 +7,21 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Paths to Zvec and dependencies ---
-set(ZVEC_INCLUDE_DIR ${CMAKE_BINARY_DIR}/../../../src/include)
-set(ZVEC_LIB_DIR ${CMAKE_BINARY_DIR}/../../../build/lib)
-set(ZVEC_DEPENDENCY_LIB_DIR ${CMAKE_BINARY_DIR}/../../../build/external/usr/local/lib)
+# Allow overrides via -DZVEC_ROOT, -DZVEC_INCLUDE_DIR, -DZVEC_LIB_DIR, -DZVEC_DEPENDENCY_LIB_DIR
+if(NOT DEFINED ZVEC_ROOT OR ZVEC_ROOT STREQUAL "")
+    get_filename_component(ZVEC_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+endif()
+
+if(NOT DEFINED ZVEC_INCLUDE_DIR OR ZVEC_INCLUDE_DIR STREQUAL "")
+    set(ZVEC_INCLUDE_DIR "${ZVEC_ROOT}/src/include")
+endif()
+if(NOT DEFINED ZVEC_LIB_DIR OR ZVEC_LIB_DIR STREQUAL "")
+    set(ZVEC_LIB_DIR "${ZVEC_ROOT}/build/lib")
+endif()
+if(NOT DEFINED ZVEC_DEPENDENCY_LIB_DIR OR ZVEC_DEPENDENCY_LIB_DIR STREQUAL "")
+    set(ZVEC_DEPENDENCY_LIB_DIR "${ZVEC_ROOT}/build/external/usr/local/lib")
+endif()
+
 
 # Add include and library search paths
 include_directories(${ZVEC_INCLUDE_DIR})
@@ -26,13 +38,59 @@ else()
     set(PROTOBUF_LIB protobuf)
 endif()
 
+# --- Arrow/Parquet resolution ---
+set(ARROW_LIB_TARGET "")
+set(PARQUET_LIB_TARGET "")
+set(ARROW_DEPENDS_TARGET "")
+set(ARROW_COMPUTE_TARGET "")
+set(ARROW_ACERO_TARGET "")
+set(ARROW_DATASET_TARGET "")
+
+if(TARGET Arrow::arrow_static)
+    set(ARROW_LIB_TARGET Arrow::arrow_static)
+endif()
+if(TARGET Arrow::parquet_static)
+    set(PARQUET_LIB_TARGET Arrow::parquet_static)
+endif()
+if(TARGET Arrow::arrow_depends)
+    set(ARROW_DEPENDS_TARGET Arrow::arrow_depends)
+endif()
+if(TARGET Arrow::arrow_compute)
+    set(ARROW_COMPUTE_TARGET Arrow::arrow_compute)
+endif()
+if(TARGET Arrow::arrow_acero)
+    set(ARROW_ACERO_TARGET Arrow::arrow_acero)
+endif()
+if(TARGET Arrow::arrow_dataset)
+    set(ARROW_DATASET_TARGET Arrow::arrow_dataset)
+endif()
+
+if(ARROW_LIB_TARGET STREQUAL "")
+    find_library(ARROW_LIB_TARGET NAMES arrow PATHS ${ZVEC_DEPENDENCY_LIB_DIR} NO_DEFAULT_PATH)
+endif()
+if(PARQUET_LIB_TARGET STREQUAL "")
+    find_library(PARQUET_LIB_TARGET NAMES parquet PATHS ${ZVEC_DEPENDENCY_LIB_DIR} NO_DEFAULT_PATH)
+endif()
+if(ARROW_DEPENDS_TARGET STREQUAL "")
+    find_library(ARROW_DEPENDS_TARGET NAMES arrow_bundled_dependencies PATHS ${ZVEC_DEPENDENCY_LIB_DIR} NO_DEFAULT_PATH)
+endif()
+if(ARROW_COMPUTE_TARGET STREQUAL "")
+    find_library(ARROW_COMPUTE_TARGET NAMES arrow_compute PATHS ${ZVEC_DEPENDENCY_LIB_DIR} NO_DEFAULT_PATH)
+endif()
+if(ARROW_ACERO_TARGET STREQUAL "")
+    find_library(ARROW_ACERO_TARGET NAMES arrow_acero PATHS ${ZVEC_DEPENDENCY_LIB_DIR} NO_DEFAULT_PATH)
+endif()
+if(ARROW_DATASET_TARGET STREQUAL "")
+    find_library(ARROW_DATASET_TARGET NAMES arrow_dataset PATHS ${ZVEC_DEPENDENCY_LIB_DIR} NO_DEFAULT_PATH)
+endif()
+
 # --- Dependency groups ---
 find_package(Threads REQUIRED)
 
 set(zvec_ailego_deps
-    arrow
-    parquet
-    arrow_bundled_dependencies
+    ${ARROW_LIB_TARGET}
+    ${PARQUET_LIB_TARGET}
+    ${ARROW_DEPENDS_TARGET}
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}
 )
@@ -44,12 +102,12 @@ set(zvec_core_deps
 set(zvec_db_deps
     roaring
     rocksdb
-    arrow
-    arrow_acero
-    arrow_bundled_dependencies
-    arrow_compute
-    arrow_dataset
-    parquet
+    ${ARROW_LIB_TARGET}
+    ${ARROW_ACERO_TARGET}
+    ${ARROW_DEPENDS_TARGET}
+    ${ARROW_COMPUTE_TARGET}
+    ${ARROW_DATASET_TARGET}
+    ${PARQUET_LIB_TARGET}
     antlr4-runtime
     ${GLOG_LIB}
     ${GFLAGS_LIB}

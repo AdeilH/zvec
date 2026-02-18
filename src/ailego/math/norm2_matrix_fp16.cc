@@ -22,7 +22,7 @@ namespace ailego {
 #define NORM_FP32_STEP_GENERAL SS_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SS_FP32_SSE
 #define NORM_FP32_STEP_AVX SS_FP32_AVX
-#define NORM_FP32_STEP_AVX512 SS_FP32_AVX512
+// #define NORM_FP32_STEP_AVX512 SS_FP32_AVX512
 #define NORM_FP32_STEP_NEON SS_FP32_NEON
 #define NORM_FP16_STEP_GENERAL SS_FP16_GENERAL
 #define NORM_FP16_STEP_NEON SS_FP16_NEON
@@ -39,8 +39,8 @@ namespace ailego {
   ymm_sum = _mm256_fmadd_ps(ymm_m, ymm_m, ymm_sum);
 
 //! Calculate sum of squared (AVX512)
-#define SS_FP32_AVX512(zmm_m, zmm_sum) \
-  zmm_sum = _mm512_fmadd_ps(zmm_m, zmm_m, zmm_sum);
+// #define SS_FP32_AVX512(zmm_m, zmm_sum) \
+//   zmm_sum = _mm512_fmadd_ps(zmm_m, zmm_m, zmm_sum);
 
 //! Calculate sum of squared (NEON)
 #define SS_FP32_NEON(v_m, v_sum) v_sum = vfmaq_f32(v_sum, v_m, v_m);
@@ -58,8 +58,8 @@ void Norm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
                                       float *out) {
 #if defined(__ARM_NEON)
   NORM_FP16_1_NEON(m, dim, out, std::sqrt)
-#elif defined(__AVX512F__)
-  NORM_FP16_1_AVX512(m, dim, out, std::sqrt)
+// #elif defined(__AVX512F__)
+//   NORM_FP16_1_AVX512(m, dim, out, std::sqrt)
 #else
   NORM_FP16_1_AVX(m, dim, out, std::sqrt)
 #endif

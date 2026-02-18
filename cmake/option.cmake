@@ -89,23 +89,16 @@ function(_detect_armv8_best)
 endfunction()
 
 function(_detect_x86_best)
-  set(_x86_flags
-    "graniterapids" "emeraldrapids" "sapphirerapids"
-    "skylake-avx512" "skylake"
-    "broadwell" "haswell" "sandybridge" "nehalem"
-    "znver3" "znver2" "znver1"
-  )
-  foreach(_arch IN LISTS _x86_flags)
-    check_c_compiler_flag("-march=${_arch}" _COMP_SUPP_${_arch})
-    if(_COMP_SUPP_${_arch})
-      _AppendFlags(CMAKE_C_FLAGS "-march=${_arch}")
-      _AppendFlags(CMAKE_CXX_FLAGS "-march=${_arch}")
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" PARENT_SCOPE)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-  message(WARNING "No known x86 microarchitecture flag supported; falling back to generic.")
+  # Use the host CPU's exact capabilities to avoid illegal instructions.
+  check_c_compiler_flag("-march=native" _COMP_SUPP_NATIVE)
+  if(_COMP_SUPP_NATIVE)
+    _AppendFlags(CMAKE_C_FLAGS "-march=native")
+    _AppendFlags(CMAKE_CXX_FLAGS "-march=native")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" PARENT_SCOPE)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" PARENT_SCOPE)
+    return()
+  endif()
+  message(WARNING "Compiler does not support -march=native; no x86 -march= set.")
 endfunction()
 
 if(MSVC)

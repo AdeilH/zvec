@@ -32,6 +32,7 @@ cc_directory(thirdparty)
 cc_directories(src)
 cc_directories(tests)
 
+
 if(BUILD_TOOLS)
     cc_directories(tools)
 endif()
@@ -59,3 +60,6 @@ if(BUILD_PYTHON_BINDINGS)
     MESSAGE(STATUS "Zvec install path: ${ZVEC_PY_INSTALL_DIR}")
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR})
 endif()
+
+
+cc_directories(examples/c++)
