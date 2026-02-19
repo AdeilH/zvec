@@ -18,6 +18,18 @@ set(SRC_LISTS
 
 pybind11_add_module(_zvec ${SRC_LISTS})
 
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|x64")
+    target_compile_options(_zvec PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512f>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512cd>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512dq>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512bw>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512vl>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512ifma>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-mno-avx512vbmi>"
+    )
+endif()
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(_zvec PRIVATE
             -Wl,--whole-archive

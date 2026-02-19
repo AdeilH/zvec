@@ -23,7 +23,7 @@ namespace core {
 
 /*! MMap File Storage
  */
-class MMapFileReadStorage : public IndexStorage {
+class MMapFileReadStorage : public IndexContainer {
  public:
   /*! MMap File Storage Segment
    */
@@ -279,6 +279,7 @@ class MMapFileReadStorage : public IndexStorage {
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(MMapFileReadStorage);
+INDEX_FACTORY_REGISTER_CONTAINER_ALIAS(MMapFileReadContainer, MMapFileReadStorage);
 
 }  // namespace core
 }  // namespace zvec

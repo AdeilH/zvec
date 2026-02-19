@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <iostream>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param.h>
@@ -15,6 +16,15 @@ Index::Pointer create_index(const BaseIndexParam::Pointer &param,
   auto index = IndexFactory::CreateAndInitIndex(*param);
   if (!index) {
     std::cout << "Failed to create index." << std::endl;
+    auto metrics = zvec::core::IndexFactory::AllMetrics();
+    std::cout << "available metrics: [";
+    for (size_t i = 0; i < metrics.size(); ++i) {
+      if (i != 0) {
+        std::cout << ", ";
+      }
+      std::cout << metrics[i];
+    }
+    std::cout << "]" << std::endl;
     return nullptr;
   }
 

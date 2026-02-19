@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/schema.h>
@@ -196,6 +197,15 @@ int main() {
   auto result = Collection::CreateAndOpen(path, *schema, options);
   if (!result.has_value()) {
     std::cout << result.error().message() << std::endl;
+    auto metrics = zvec::core::IndexFactory::AllMetrics();
+    std::cout << "available metrics: [";
+    for (size_t i = 0; i < metrics.size(); ++i) {
+      if (i != 0) {
+        std::cout << ", ";
+      }
+      std::cout << metrics[i];
+    }
+    std::cout << "]" << std::endl;
     return -1;
   }
 
@@ -244,8 +254,12 @@ int main() {
     }
     std::cout << "query result: doc_count[" << res.value().size() << "]"
               << std::endl;
-    std::cout << "first doc: " << res.value()[0]->to_detail_string()
-              << std::endl;
+    if (res.value().empty() || !res.value()[0]) {
+      std::cout << "first doc: <none>" << std::endl;
+    } else {
+      std::cout << "first doc: " << res.value()[0]->to_detail_string()
+                << std::endl;
+    }
   }
 
   // close and reopen

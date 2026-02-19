@@ -68,6 +68,23 @@ std::vector<std::string> IndexFactory::AllDumpers(void) {
   return ailego::Factory<IndexDumper>::Classes();
 }
 
+IndexContainer::Pointer IndexFactory::CreateContainer(const std::string &name) {
+  IndexContainer::Pointer obj =
+      ailego::Factory<IndexContainer>::MakeShared(name.c_str());
+  if (obj) {
+    obj->set_name(name);
+  }
+  return obj;
+}
+
+bool IndexFactory::HasContainer(const std::string &name) {
+  return ailego::Factory<IndexContainer>::Has(name.c_str());
+}
+
+std::vector<std::string> IndexFactory::AllContainers(void) {
+  return ailego::Factory<IndexContainer>::Classes();
+}
+
 IndexStorage::Pointer IndexFactory::CreateStorage(const std::string &name) {
   IndexStorage::Pointer obj =
       ailego::Factory<IndexStorage>::MakeShared(name.c_str());

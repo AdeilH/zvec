@@ -49,3 +49,34 @@ index 62ebbcc..e17f67e 100644
 -  ${_glog_CMake_INSTALLDIR})
 +#install (EXPORT glog-targets NAMESPACE glog:: DESTINATION
 +#  ${_glog_CMake_INSTALLDIR})
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e17f67e..3d9f7c1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -283,7 +283,10 @@ set (_PC_HEADERS ucontext.h signal.h)
+ 
+ if (HAVE_UCONTEXT_H AND NOT PC_FROM_UCONTEXT)
++  set (_UCTFIELD_TMP_DIR
++    ${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp)
++  file (MAKE_DIRECTORY ${_UCTFIELD_TMP_DIR})
+   foreach (_PC_FIELD ${_PC_FIELDS})
+     foreach (_PC_HEADER ${_PC_HEADERS})
+-      set (_TMP
+-      ${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/uctfield.cpp)
++      set (_TMP ${_UCTFIELD_TMP_DIR}/uctfield.cpp)
+       file (WRITE ${_TMP} "
+ #define _GNU_SOURCE 1
+ #include <${_PC_HEADER}>
+@@
+diff --git a/src/config.h.cmake.in b/src/config.h.cmake.in
+index 5c1ac8b..b17b6e5 100644
+--- a/src/config.h.cmake.in
++++ b/src/config.h.cmake.in
+@@ -165,7 +165,7 @@
+ /* Define to the version of this package. */
+ #cmakedefine PACKAGE_VERSION
+ 
+ /* How to access the PC from a struct ucontext */
+-#cmakedefine PC_FROM_UCONTEXT
++#cmakedefine PC_FROM_UCONTEXT @PC_FROM_UCONTEXT@

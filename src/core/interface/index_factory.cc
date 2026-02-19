@@ -111,6 +111,11 @@ BaseIndexParam::Pointer IndexFactory::DeserializeIndexParamFromJson(
   }
 }
 
+std::string IndexFactory::QueryParamSerializeToJson(
+    const BaseIndexQueryParam &param) {
+  return QueryParamSerializeToJson<BaseIndexQueryParam>(param, false);
+}
+
 template <typename QueryParamType,
           std::enable_if_t<
               std::is_base_of_v<BaseIndexQueryParam, QueryParamType>, bool> >

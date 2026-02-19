@@ -24,7 +24,7 @@ namespace core {
 
 /*! Memory Storage
  */
-class MemoryReadStorage : public IndexStorage {
+class MemoryReadStorage : public IndexContainer {
  public:
   /*! Memory Storage Segment
    */
@@ -244,6 +244,7 @@ class MemoryReadStorage : public IndexStorage {
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(MemoryReadStorage);
+INDEX_FACTORY_REGISTER_CONTAINER_ALIAS(MemoryContainer, MemoryReadStorage);
 
 }  // namespace core
 }  // namespace zvec

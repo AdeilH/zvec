@@ -25,7 +25,7 @@ namespace core {
 
 /*! MMap File Storage
  */
-class BufferStorage : public IndexStorage {
+class BufferStorage : public IndexContainer {
  public:
   /*! Index Storage Segment
    */
@@ -479,6 +479,7 @@ class BufferStorage : public IndexStorage {
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(BufferStorage);
+INDEX_FACTORY_REGISTER_CONTAINER_ALIAS(BufferContainer, BufferStorage);
 
 }  // namespace core
 }  // namespace zvec

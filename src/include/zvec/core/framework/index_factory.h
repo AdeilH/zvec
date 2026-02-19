@@ -17,6 +17,7 @@
 #include <zvec/ailego/pattern/factory.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_cluster.h>
+#include <zvec/core/framework/index_container.h>
 #include <zvec/core/framework/index_converter.h>
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_logger.h>
@@ -61,6 +62,9 @@ struct IndexFactory {
 
   //! Retrieve all dumper classes
   static std::vector<std::string> AllDumpers(void);
+
+  //! Create a container by name
+  static IndexContainer::Pointer CreateContainer(const std::string &name);
 
   //! Test if the container is exist
   static bool HasContainer(const std::string &name);
@@ -192,6 +196,14 @@ struct IndexFactory {
 //! Register Index Dumper
 #define INDEX_FACTORY_REGISTER_DUMPER(__IMPL__, ...) \
   INDEX_FACTORY_REGISTER_DUMPER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+//! Register Index Container
+#define INDEX_FACTORY_REGISTER_CONTAINER_ALIAS(__NAME__, __IMPL__, ...) \
+  AILEGO_FACTORY_REGISTER(__NAME__, IndexContainer, __IMPL__, ##__VA_ARGS__)
+
+//! Register Index Container
+#define INDEX_FACTORY_REGISTER_CONTAINER(__IMPL__, ...) \
+  INDEX_FACTORY_REGISTER_CONTAINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 //! Register Index Storage
 #define INDEX_FACTORY_REGISTER_STORAGE_ALIAS(__NAME__, __IMPL__, ...) \

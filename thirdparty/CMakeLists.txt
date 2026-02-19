@@ -12,6 +12,10 @@ set(EXTERNAL_LIB_DIR ${CMAKE_BINARY_DIR}/external/usr/local/lib)
 file(MAKE_DIRECTORY ${EXTERNAL_INC_DIR})
 file(MAKE_DIRECTORY ${EXTERNAL_LIB_DIR})
 
+if(BUILD_PYTHON_BINDINGS AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i686|i386|x64")
+  set(ROARING_DISABLE_AVX512 ON CACHE BOOL "Disable AVX512 in CRoaring" FORCE)
+endif()
+
 add_subdirectory(googletest googletest EXCLUDE_FROM_ALL)
 add_subdirectory(gflags gflags EXCLUDE_FROM_ALL)
 add_subdirectory(glog glog EXCLUDE_FROM_ALL)
@@ -24,4 +28,3 @@ add_subdirectory(rocksdb rocksdb EXCLUDE_FROM_ALL)
 add_subdirectory(CRoaring CRoaring EXCLUDE_FROM_ALL)
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
 add_subdirectory(magic_enum magic_enum EXCLUDE_FROM_ALL)
-

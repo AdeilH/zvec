@@ -55,6 +55,31 @@ pip install zvec
 npm install @zvec/zvec
 ```
 
+### Go (cgo)
+
+Build the monolithic libraries and C headers:
+
+```bash
+cmake -S . -B cmake-build-release -DBUILD_MONOLITH_LIBS=ON
+CCACHE_DISABLE=1 cmake --build cmake-build-release --target zvec_all zvec_all_static_archive -j
+```
+
+Run the Go example:
+
+```bash
+cd examples/go
+export LD_LIBRARY_PATH=../../cmake-build-release/lib:$LD_LIBRARY_PATH
+go run .
+```
+
+If you prefer installing headers/libs to a prefix:
+
+```bash
+cmake --install cmake-build-release --prefix ./dist
+```
+
+Then update the cgo flags in `examples/go/main.go` to point at `./dist/include` and `./dist/lib`.
+
 ### ✅ Supported Platforms
 
 - Linux (x86_64, ARM64)

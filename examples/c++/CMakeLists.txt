@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 # Enable compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Control whether to force-link static archives to keep registration objects.
+option(ZVEC_EXAMPLES_WHOLE_ARCHIVE "Force-link zvec core static libs" ON)
+
 # --- Paths to Zvec and dependencies ---
 # Allow overrides via -DZVEC_ROOT, -DZVEC_INCLUDE_DIR, -DZVEC_LIB_DIR, -DZVEC_DEPENDENCY_LIB_DIR
 if(NOT DEFINED ZVEC_ROOT OR ZVEC_ROOT STREQUAL "")
@@ -120,28 +123,50 @@ set(zvec_db_deps
 # zvec_ailego: links libzvec_ailego.a + its deps
 add_library(zvec-ailego INTERFACE)
 target_link_libraries(zvec-ailego INTERFACE
-    -lzvec_ailego
+    ${ZVEC_LIB_DIR}/libzvec_ailego.a
     ${zvec_ailego_deps}
 )
 
 # zvec_core: links libzvec_core.a via special flags (handled externally), but declare logical deps
 add_library(zvec-core INTERFACE)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(zvec-core INTERFACE
-        -Wl,--whole-archive
-        zvec_core
-        -Wl,--no-whole-archive
-        -Wl,--start-group
-        zvec-ailego
-        ${zvec_core_deps}
-        -Wl,--end-group
-    )
+    if(ZVEC_EXAMPLES_WHOLE_ARCHIVE)
+        target_link_libraries(zvec-core INTERFACE
+            -Wl,--whole-archive
+            ${ZVEC_LIB_DIR}/libzvec_core.a
+            -Wl,--no-whole-archive
+            -Wl,--start-group
+            ${ZVEC_LIB_DIR}/libzvec_ailego.a
+            ${zvec_core_deps}
+            ${zvec_ailego_deps}
+            -Wl,--end-group
+        )
+    else()
+        target_link_libraries(zvec-core INTERFACE
+            ${ZVEC_LIB_DIR}/libzvec_core.a
+            -Wl,--start-group
+            ${ZVEC_LIB_DIR}/libzvec_ailego.a
+            ${zvec_core_deps}
+            ${zvec_ailego_deps}
+            -Wl,--end-group
+        )
+    endif()
 elseif(APPLE)
-    target_link_libraries(zvec-core INTERFACE
-        -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
-        zvec-ailego
-        ${zvec_core_deps}
-    )
+    if(ZVEC_EXAMPLES_WHOLE_ARCHIVE)
+        target_link_libraries(zvec-core INTERFACE
+            -Wl,-force_load ${ZVEC_LIB_DIR}/libzvec_core.a
+            ${ZVEC_LIB_DIR}/libzvec_ailego.a
+            ${zvec_core_deps}
+            ${zvec_ailego_deps}
+        )
+    else()
+        target_link_libraries(zvec-core INTERFACE
+            ${ZVEC_LIB_DIR}/libzvec_core.a
+            ${ZVEC_LIB_DIR}/libzvec_ailego.a
+            ${zvec_core_deps}
+            ${zvec_ailego_deps}
+        )
+    endif()
 else()
     message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
 endif()
@@ -150,7 +175,7 @@ endif()
 add_library(zvec-db INTERFACE)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(zvec-db INTERFACE
-        zvec_db
+        ${ZVEC_LIB_DIR}/libzvec_db.a
         zvec-core
         zvec-ailego
         -Wl,--start-group
@@ -159,7 +184,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 elseif(APPLE)
     target_link_libraries(zvec-db INTERFACE
-        zvec_db
+        ${ZVEC_LIB_DIR}/libzvec_db.a
         zvec-core
         zvec-ailego
         ${zvec_db_deps}

@@ -24,7 +24,7 @@ namespace core {
 
 /*! File Storage
  */
-class FileReadStorage : public IndexStorage {
+class FileReadStorage : public IndexContainer {
  public:
   /*! File Storage Segment
    */
@@ -498,6 +498,7 @@ class FileReadStorage : public IndexStorage {
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(FileReadStorage);
+INDEX_FACTORY_REGISTER_CONTAINER_ALIAS(FileContainer, FileReadStorage);
 
 }  // namespace core
 }  // namespace zvec
