@@ -1,10 +1,12 @@
 #include "zvec_c.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <new>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <zvec/core/interface/index.h>
@@ -93,6 +95,11 @@ struct zvec_core_index {
 struct zvec_core_search_result {
   std::vector<uint64_t> keys;
   std::vector<float> scores;
+  // fetched dense vector bytes per result entry (populated when fetch_vector=true)
+  std::vector<std::string> dense_vectors;
+  // fetched sparse: indices and values per entry
+  std::vector<std::string> sparse_indices;
+  std::vector<std::string> sparse_values;
 };
 
 struct zvec_core_factory_object {
@@ -137,6 +144,38 @@ struct zvec_db_group_query {
 
 struct zvec_db_group_result {
   std::vector<zvec::GroupResult> groups;
+};
+
+// ---- new high-level structures ----
+
+struct zvec_db_vector_query {
+  // The underlying VectorQuery that will be forwarded to the engine.
+  zvec::VectorQuery query;
+  // Optional: if non-empty the engine fetches the stored vector for this pk.
+  std::string query_id;
+  // True once query_vector_ or query_sparse_* bytes have been set.
+  bool has_vector{false};
+};
+
+// A single-field result entry used during multi-query fusion.
+struct zvec_db_field_result {
+  std::string field_name;
+  std::vector<zvec::Doc::Ptr> docs;
+};
+
+struct zvec_db_reranker {
+  zvec_db_reranker_type_t type;
+  int topn{0};
+  // RRF
+  int rank_constant{60};
+  // Weighted
+  std::vector<float> weights;
+};
+
+struct zvec_db_multi_query {
+  std::vector<const zvec_db_vector_query_t *> queries;
+  int topk{10};
+  const zvec_db_reranker_t *reranker{nullptr};
 };
 
 struct zvec_db_config {
@@ -809,9 +848,22 @@ extern "C" zvec_status_t zvec_core_index_search_dense(
     auto *wrap = new zvec_core_search_result;
     wrap->keys.reserve(result.doc_list_.size());
     wrap->scores.reserve(result.doc_list_.size());
-    for (const auto &doc : result.doc_list_) {
+    wrap->dense_vectors.reserve(result.doc_list_.size());
+    wrap->sparse_indices.reserve(result.doc_list_.size());
+    wrap->sparse_values.reserve(result.doc_list_.size());
+    for (size_t i = 0; i < result.doc_list_.size(); ++i) {
+      const auto &doc = result.doc_list_[i];
       wrap->keys.push_back(doc.key());
       wrap->scores.push_back(doc.score());
+      // store fetched dense vector bytes if present
+      if (i < result.reverted_vector_list_.size()) {
+        wrap->dense_vectors.push_back(result.reverted_vector_list_[i]);
+      } else {
+        wrap->dense_vectors.emplace_back();
+      }
+      // sparse is not expected for dense search but initialise anyway
+      wrap->sparse_indices.emplace_back();
+      wrap->sparse_values.emplace_back();
     }
     *out_result = wrap;
     return ZVEC_STATUS_OK;
@@ -846,9 +898,18 @@ extern "C" zvec_status_t zvec_core_index_search_sparse(
     auto *wrap = new zvec_core_search_result;
     wrap->keys.reserve(result.doc_list_.size());
     wrap->scores.reserve(result.doc_list_.size());
-    for (const auto &doc : result.doc_list_) {
+    wrap->dense_vectors.reserve(result.doc_list_.size());
+    wrap->sparse_indices.reserve(result.doc_list_.size());
+    wrap->sparse_values.reserve(result.doc_list_.size());
+    for (size_t i = 0; i < result.doc_list_.size(); ++i) {
+      const auto &doc = result.doc_list_[i];
       wrap->keys.push_back(doc.key());
       wrap->scores.push_back(doc.score());
+      wrap->dense_vectors.emplace_back();
+      // store fetched sparse vector if present
+      const auto &sd = doc.sparse_doc();
+      wrap->sparse_indices.push_back(sd.sparse_indices());
+      wrap->sparse_values.push_back(sd.sparse_values());
     }
     *out_result = wrap;
     return ZVEC_STATUS_OK;
@@ -4291,3 +4352,1578 @@ extern "C" void zvec_ailego_string_split_free(char **items, size_t count) {
   }
   std::free(items);
 }
+
+// =============================================================
+// zvec_db_query_t — missing getters
+// =============================================================
+
+extern "C" zvec_status_t zvec_db_query_get_topk(
+    const zvec_db_query_t *query, int *out_topk) {
+  if (!query || !out_topk) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  *out_topk = query->query.topk_;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_query_get_filter(
+    const zvec_db_query_t *query, char **out_filter) {
+  if (!query || !out_filter) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  char *dup = dup_string(query->query.filter_);
+  if (!dup) {
+    return set_error("failed to allocate string");
+  }
+  *out_filter = dup;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_query_get_field_name(
+    const zvec_db_query_t *query, char **out_field_name) {
+  if (!query || !out_field_name) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  char *dup = dup_string(query->query.field_name_);
+  if (!dup) {
+    return set_error("failed to allocate string");
+  }
+  *out_field_name = dup;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_query_get_include_vector(
+    const zvec_db_query_t *query, int *out_include_vector) {
+  if (!query || !out_include_vector) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  *out_include_vector = query->query.include_vector_ ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_query_get_include_doc_id(
+    const zvec_db_query_t *query, int *out_include_doc_id) {
+  if (!query || !out_include_doc_id) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  *out_include_doc_id = query->query.include_doc_id_ ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_query_get_output_fields(
+    const zvec_db_query_t *query, char ***out_fields, size_t *out_count) {
+  if (!query || !out_fields || !out_count) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  if (!query->query.output_fields_.has_value() ||
+      query->query.output_fields_->empty()) {
+    *out_fields = nullptr;
+    *out_count = 0;
+    return ZVEC_STATUS_OK;
+  }
+  const auto &fields = *query->query.output_fields_;
+  char **items =
+      static_cast<char **>(std::calloc(fields.size(), sizeof(char *)));
+  if (!items) {
+    return set_error("failed to allocate items");
+  }
+  for (size_t i = 0; i < fields.size(); ++i) {
+    items[i] = dup_string(fields[i]);
+    if (!items[i]) {
+      for (size_t j = 0; j < i; ++j) std::free(items[j]);
+      std::free(items);
+      return set_error("failed to allocate item");
+    }
+  }
+  *out_fields = items;
+  *out_count = fields.size();
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_db_query_result_t — score accessor
+// =============================================================
+
+extern "C" zvec_status_t zvec_db_query_result_get_score(
+    const zvec_db_query_result_t *result, size_t idx, float *out_score) {
+  if (!result || !out_score) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  if (idx >= result->docs.size()) {
+    return set_error("index out of range", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  auto doc = result->docs[idx];
+  if (!doc) {
+    return set_error("doc is null");
+  }
+  // The engine stores the search score in the special "_score" field.
+  auto res = doc->get_field<float>("_score");
+  if (res.status() == zvec::Doc::FieldGetStatus::SUCCESS) {
+    *out_score = res.value();
+  } else {
+    *out_score = 0.0f;
+  }
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_db_vector_query_t
+// =============================================================
+
+extern "C" zvec_status_t zvec_db_vector_query_create(
+    const char *field_name, zvec_db_vector_query_t **out_query) {
+  if (!field_name || !out_query) {
+    return set_error("field_name or out_query is null",
+                     ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  try {
+    auto *vq = new zvec_db_vector_query();
+    vq->query.field_name_ = field_name;
+    vq->query.topk_ = 10;
+    *out_query = vq;
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" void zvec_db_vector_query_destroy(zvec_db_vector_query_t *query) {
+  delete query;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_dense_vector_bytes(
+    zvec_db_vector_query_t *query, const void *data, size_t bytes) {
+  if (!query || !data || bytes == 0) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.query_vector_.assign(reinterpret_cast<const char *>(data),
+                                    bytes);
+  query->query_id.clear();
+  query->has_vector = true;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_dense_vector_fp32(
+    zvec_db_vector_query_t *query, const float *values, size_t count) {
+  if (!query || !values || count == 0) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.query_vector_.assign(
+      reinterpret_cast<const char *>(values), count * sizeof(float));
+  query->query_id.clear();
+  query->has_vector = true;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_sparse_vector(
+    zvec_db_vector_query_t *query,
+    const uint32_t *indices,
+    const void *values,
+    size_t count,
+    size_t value_bytes) {
+  if (!query || !indices || !values || count == 0 || value_bytes == 0) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.query_sparse_indices_.assign(
+      reinterpret_cast<const char *>(indices), count * sizeof(uint32_t));
+  query->query.query_sparse_values_.assign(
+      reinterpret_cast<const char *>(values), value_bytes);
+  query->query_id.clear();
+  query->has_vector = true;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_id(
+    zvec_db_vector_query_t *query, const char *pk) {
+  if (!query || !pk) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query_id = pk;
+  // Clear any previously set vector bytes so engine uses id-based fetch.
+  query->query.query_vector_.clear();
+  query->query.query_sparse_indices_.clear();
+  query->query.query_sparse_values_.clear();
+  query->has_vector = false;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_topk(
+    zvec_db_vector_query_t *query, int topk) {
+  if (!query) {
+    return set_error("query is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.topk_ = topk;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_filter(
+    zvec_db_vector_query_t *query, const char *filter) {
+  if (!query || !filter) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.filter_ = filter;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_include_vector(
+    zvec_db_vector_query_t *query, int include_vector) {
+  if (!query) {
+    return set_error("query is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.include_vector_ = include_vector != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_include_doc_id(
+    zvec_db_vector_query_t *query, int include_doc_id) {
+  if (!query) {
+    return set_error("query is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.include_doc_id_ = include_doc_id != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_output_fields(
+    zvec_db_vector_query_t *query, const char **fields, size_t count) {
+  if (!query) {
+    return set_error("query is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  if (!fields) {
+    query->query.output_fields_.reset();
+    return ZVEC_STATUS_OK;
+  }
+  std::vector<std::string> out;
+  out.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    if (fields[i]) out.emplace_back(fields[i]);
+  }
+  query->query.output_fields_ = std::move(out);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_set_params(
+    zvec_db_vector_query_t *query, const zvec_db_query_params_t *params) {
+  if (!query || !params || !params->ptr) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  query->query.query_params_ = params->ptr;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_get_field_name(
+    const zvec_db_vector_query_t *query, char **out_field_name) {
+  if (!query || !out_field_name) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  char *dup = dup_string(query->query.field_name_);
+  if (!dup) return set_error("failed to allocate string");
+  *out_field_name = dup;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_get_topk(
+    const zvec_db_vector_query_t *query, int *out_topk) {
+  if (!query || !out_topk) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  *out_topk = query->query.topk_;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_get_filter(
+    const zvec_db_vector_query_t *query, char **out_filter) {
+  if (!query || !out_filter) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  char *dup = dup_string(query->query.filter_);
+  if (!dup) return set_error("failed to allocate string");
+  *out_filter = dup;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_has_id(
+    const zvec_db_vector_query_t *query, int *out_has_id) {
+  if (!query || !out_has_id) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  *out_has_id = !query->query_id.empty() ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_vector_query_has_vector(
+    const zvec_db_vector_query_t *query, int *out_has_vector) {
+  if (!query || !out_has_vector) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  *out_has_vector = query->has_vector ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+// Helper: resolve query-by-id if needed (fetch vector from collection),
+// then execute the underlying VectorQuery.
+static zvec_status_t vector_query_resolve_and_execute(
+    zvec_db_collection_t *collection,
+    const zvec_db_vector_query_t *vq,
+    std::vector<zvec::Doc::Ptr> &out_docs) {
+  zvec::VectorQuery q = vq->query;  // copy
+
+  if (!vq->query_id.empty()) {
+    // Fetch the document for the given pk.
+    auto fetch_result = collection->ptr->Fetch({vq->query_id});
+    if (!fetch_result.has_value()) {
+      return set_error(fetch_result.error().message());
+    }
+    auto it = fetch_result.value().find(vq->query_id);
+    if (it == fetch_result.value().end() || !it->second) {
+      return set_error("document not found for id-based vector query");
+    }
+    const zvec::Doc::Ptr &fetched_doc = it->second;
+
+    // Get schema to determine field data type.
+    auto schema_result = collection->ptr->Schema();
+    if (!schema_result.has_value()) {
+      return set_error(schema_result.error().message());
+    }
+    zvec::CollectionSchema schema_copy = schema_result.value();
+    const auto *field_schema =
+        schema_copy.get_vector_field(q.field_name_);
+    if (!field_schema) {
+      return set_error(
+          (std::string("vector field not found: ") + q.field_name_).c_str());
+    }
+
+    // Extract vector bytes based on data type.
+    const std::string &fn = q.field_name_;
+    zvec::DataType dt = field_schema->data_type();
+    switch (dt) {
+      case zvec::DataType::VECTOR_FP32: {
+        auto res = fetched_doc->get_field<std::vector<float>>(fn);
+        if (res.status() != zvec::Doc::FieldGetStatus::SUCCESS) {
+          return set_error("failed to get fp32 vector from fetched doc");
+        }
+        const auto &v = res.value();
+        q.query_vector_.assign(reinterpret_cast<const char *>(v.data()),
+                               v.size() * sizeof(float));
+        break;
+      }
+      case zvec::DataType::VECTOR_FP16: {
+        auto res =
+            fetched_doc->get_field<std::vector<zvec::ailego::Float16>>(fn);
+        if (res.status() != zvec::Doc::FieldGetStatus::SUCCESS) {
+          return set_error("failed to get fp16 vector from fetched doc");
+        }
+        const auto &v = res.value();
+        q.query_vector_.assign(
+            reinterpret_cast<const char *>(v.data()),
+            v.size() * sizeof(zvec::ailego::Float16));
+        break;
+      }
+      case zvec::DataType::VECTOR_INT8: {
+        auto res = fetched_doc->get_field<std::vector<int8_t>>(fn);
+        if (res.status() != zvec::Doc::FieldGetStatus::SUCCESS) {
+          return set_error("failed to get int8 vector from fetched doc");
+        }
+        const auto &v = res.value();
+        q.query_vector_.assign(reinterpret_cast<const char *>(v.data()),
+                               v.size() * sizeof(int8_t));
+        break;
+      }
+      case zvec::DataType::SPARSE_VECTOR_FP32: {
+        using SparseVecF32 =
+            std::pair<std::vector<uint32_t>, std::vector<float>>;
+        auto res = fetched_doc->get_field<SparseVecF32>(fn);
+        if (res.status() != zvec::Doc::FieldGetStatus::SUCCESS) {
+          return set_error(
+              "failed to get sparse fp32 vector from fetched doc");
+        }
+        const auto &idx_vals = res.value();
+        q.query_sparse_indices_.assign(
+            reinterpret_cast<const char *>(idx_vals.first.data()),
+            idx_vals.first.size() * sizeof(uint32_t));
+        q.query_sparse_values_.assign(
+            reinterpret_cast<const char *>(idx_vals.second.data()),
+            idx_vals.second.size() * sizeof(float));
+        break;
+      }
+      case zvec::DataType::SPARSE_VECTOR_FP16: {
+        using SparseVecF16 =
+            std::pair<std::vector<uint32_t>, std::vector<zvec::ailego::Float16>>;
+        auto res = fetched_doc->get_field<SparseVecF16>(fn);
+        if (res.status() != zvec::Doc::FieldGetStatus::SUCCESS) {
+          return set_error(
+              "failed to get sparse fp16 vector from fetched doc");
+        }
+        const auto &idx_vals = res.value();
+        q.query_sparse_indices_.assign(
+            reinterpret_cast<const char *>(idx_vals.first.data()),
+            idx_vals.first.size() * sizeof(uint32_t));
+        q.query_sparse_values_.assign(
+            reinterpret_cast<const char *>(idx_vals.second.data()),
+            idx_vals.second.size() * sizeof(zvec::ailego::Float16));
+        break;
+      }
+      default:
+        return set_error("unsupported vector data type for id-based query");
+    }
+  }
+
+  auto result = collection->ptr->Query(q);
+  if (!result.has_value()) {
+    return set_error(result.error().message());
+  }
+  out_docs = std::move(result.value());
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_collection_vector_query(
+    zvec_db_collection_t *collection,
+    const zvec_db_vector_query_t *query,
+    zvec_db_query_result_t **out_result) {
+  if (!collection || !collection->ptr || !query || !out_result) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  std::vector<zvec::Doc::Ptr> docs;
+  zvec_status_t s = vector_query_resolve_and_execute(collection, query, docs);
+  if (s != ZVEC_STATUS_OK) return s;
+  auto *wrap = new zvec_db_query_result;
+  wrap->docs = std::move(docs);
+  *out_result = wrap;
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_db_reranker_t
+// =============================================================
+
+extern "C" zvec_status_t zvec_db_reranker_create_rrf(
+    int topn, int rank_constant, zvec_db_reranker_t **out_reranker) {
+  if (!out_reranker) {
+    return set_error("out_reranker is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  try {
+    auto *r = new zvec_db_reranker();
+    r->type = ZVEC_DB_RERANKER_RRF;
+    r->topn = topn;
+    r->rank_constant = rank_constant > 0 ? rank_constant : 60;
+    *out_reranker = r;
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" zvec_status_t zvec_db_reranker_create_weighted(
+    int topn, const float *weights, size_t count,
+    zvec_db_reranker_t **out_reranker) {
+  if (!out_reranker) {
+    return set_error("out_reranker is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  if (count > 0 && !weights) {
+    return set_error("weights is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  try {
+    auto *r = new zvec_db_reranker();
+    r->type = ZVEC_DB_RERANKER_WEIGHTED;
+    r->topn = topn;
+    if (weights && count > 0) {
+      r->weights.assign(weights, weights + count);
+    }
+    *out_reranker = r;
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" void zvec_db_reranker_destroy(zvec_db_reranker_t *reranker) {
+  delete reranker;
+}
+
+// =============================================================
+// zvec_db_multi_query_t
+// =============================================================
+
+extern "C" zvec_status_t zvec_db_multi_query_create(
+    zvec_db_multi_query_t **out_mq) {
+  if (!out_mq) {
+    return set_error("out_mq is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  try {
+    *out_mq = new zvec_db_multi_query();
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" void zvec_db_multi_query_destroy(zvec_db_multi_query_t *mq) {
+  delete mq;
+}
+
+extern "C" zvec_status_t zvec_db_multi_query_add(
+    zvec_db_multi_query_t *mq, const zvec_db_vector_query_t *query) {
+  if (!mq || !query) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  mq->queries.push_back(query);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_multi_query_set_topk(
+    zvec_db_multi_query_t *mq, int topk) {
+  if (!mq) {
+    return set_error("mq is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  mq->topk = topk;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_multi_query_set_reranker(
+    zvec_db_multi_query_t *mq, const zvec_db_reranker_t *reranker) {
+  if (!mq) {
+    return set_error("mq is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  mq->reranker = reranker;
+  return ZVEC_STATUS_OK;
+}
+
+// --- fusion helpers ---
+
+// Reciprocal Rank Fusion: score(d) = sum_q 1 / (k + rank_q(d))
+static std::vector<zvec::Doc::Ptr> fuse_rrf(
+    const std::vector<std::vector<zvec::Doc::Ptr>> &result_sets,
+    int rank_constant, int topn) {
+  // Map pk -> (doc ptr, accumulated score)
+  std::unordered_map<std::string, std::pair<zvec::Doc::Ptr, float>> score_map;
+  for (const auto &docs : result_sets) {
+    for (size_t rank = 0; rank < docs.size(); ++rank) {
+      const auto &doc = docs[rank];
+      if (!doc) continue;
+      const std::string &pk = doc->pk();
+      float rrf_score = 1.0f / (static_cast<float>(rank_constant) +
+                                static_cast<float>(rank + 1));
+      auto it = score_map.find(pk);
+      if (it == score_map.end()) {
+        score_map[pk] = {doc, rrf_score};
+      } else {
+        it->second.second += rrf_score;
+      }
+    }
+  }
+  std::vector<std::pair<zvec::Doc::Ptr, float>> ranked(score_map.size());
+  size_t i = 0;
+  for (auto &kv : score_map) {
+    ranked[i++] = kv.second;
+  }
+  std::sort(ranked.begin(), ranked.end(),
+            [](const auto &a, const auto &b) { return a.second > b.second; });
+  size_t limit =
+      (topn > 0 && static_cast<size_t>(topn) < ranked.size())
+          ? static_cast<size_t>(topn)
+          : ranked.size();
+  std::vector<zvec::Doc::Ptr> result;
+  result.reserve(limit);
+  for (size_t j = 0; j < limit; ++j) {
+    // Store score into doc _score field so callers can retrieve it.
+    ranked[j].first->set<float>("_score", ranked[j].second);
+    result.push_back(ranked[j].first);
+  }
+  return result;
+}
+
+// Weighted score fusion: score(d) = sum_q weight_q * score_q(d)
+static std::vector<zvec::Doc::Ptr> fuse_weighted(
+    const std::vector<std::vector<zvec::Doc::Ptr>> &result_sets,
+    const std::vector<float> &weights, int topn) {
+  std::unordered_map<std::string, std::pair<zvec::Doc::Ptr, float>> score_map;
+  for (size_t q = 0; q < result_sets.size(); ++q) {
+    float w = (q < weights.size()) ? weights[q] : 1.0f;
+    const auto &docs = result_sets[q];
+    for (const auto &doc : docs) {
+      if (!doc) continue;
+      const std::string &pk = doc->pk();
+      // Try to read existing _score; fall back to 0.
+      float doc_score = 0.0f;
+      auto res = doc->get_field<float>("_score");
+      if (res.status() == zvec::Doc::FieldGetStatus::SUCCESS) {
+        doc_score = res.value();
+      }
+      auto it = score_map.find(pk);
+      if (it == score_map.end()) {
+        score_map[pk] = {doc, w * doc_score};
+      } else {
+        it->second.second += w * doc_score;
+      }
+    }
+  }
+  std::vector<std::pair<zvec::Doc::Ptr, float>> ranked(score_map.size());
+  size_t i = 0;
+  for (auto &kv : score_map) ranked[i++] = kv.second;
+  std::sort(ranked.begin(), ranked.end(),
+            [](const auto &a, const auto &b) { return a.second > b.second; });
+  size_t limit =
+      (topn > 0 && static_cast<size_t>(topn) < ranked.size())
+          ? static_cast<size_t>(topn)
+          : ranked.size();
+  std::vector<zvec::Doc::Ptr> result;
+  result.reserve(limit);
+  for (size_t j = 0; j < limit; ++j) {
+    ranked[j].first->set<float>("_score", ranked[j].second);
+    result.push_back(ranked[j].first);
+  }
+  return result;
+}
+
+extern "C" zvec_status_t zvec_db_collection_multi_query(
+    zvec_db_collection_t *collection,
+    const zvec_db_multi_query_t *mq,
+    zvec_db_query_result_t **out_result) {
+  if (!collection || !collection->ptr || !mq || !out_result) {
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  if (mq->queries.empty()) {
+    return set_error("multi_query has no queries",
+                     ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+
+  // Execute each sub-query and collect result sets.
+  std::vector<std::vector<zvec::Doc::Ptr>> result_sets;
+  result_sets.reserve(mq->queries.size());
+  for (const auto *vq : mq->queries) {
+    std::vector<zvec::Doc::Ptr> docs;
+    zvec_status_t s =
+        vector_query_resolve_and_execute(collection, vq, docs);
+    if (s != ZVEC_STATUS_OK) return s;
+    result_sets.push_back(std::move(docs));
+  }
+
+  // If only one query and no reranker, return directly.
+  std::vector<zvec::Doc::Ptr> fused;
+  if (result_sets.size() == 1 && !mq->reranker) {
+    fused = std::move(result_sets[0]);
+    // Trim to topk if needed.
+    if (mq->topk > 0 &&
+        fused.size() > static_cast<size_t>(mq->topk)) {
+      fused.resize(static_cast<size_t>(mq->topk));
+    }
+  } else if (!mq->reranker ||
+             mq->reranker->type == ZVEC_DB_RERANKER_RRF) {
+    int k = mq->reranker ? mq->reranker->rank_constant : 60;
+    int topn = mq->reranker ? mq->reranker->topn : mq->topk;
+    if (topn == 0) topn = mq->topk;
+    fused = fuse_rrf(result_sets, k, topn);
+  } else {
+    // Weighted
+    int topn = mq->reranker->topn;
+    if (topn == 0) topn = mq->topk;
+    fused = fuse_weighted(result_sets, mq->reranker->weights, topn);
+  }
+
+  auto *wrap = new zvec_db_query_result;
+  wrap->docs = std::move(fused);
+  *out_result = wrap;
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_core_param_t — base param + full getters/setters
+// =============================================================
+
+extern "C" zvec_status_t zvec_core_param_create_base(
+    zvec_core_metric_type_t metric,
+    zvec_core_data_type_t data_type,
+    int dimension,
+    zvec_core_param_t **out_param) {
+  if (!out_param) {
+    return set_error("out_param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  }
+  try {
+    auto p = std::make_shared<zvec::core_interface::BaseIndexParam>(
+        zvec::core_interface::IndexType::kNone, to_metric(metric), dimension);
+    p->data_type = to_data_type(data_type);
+    *out_param = new zvec_core_param{p};
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" zvec_core_index_type_t zvec_core_param_get_index_type(
+    const zvec_core_param_t *param) {
+  if (!param || !param->ptr) return ZVEC_CORE_INDEX_NONE;
+  switch (param->ptr->index_type) {
+    case zvec::core_interface::IndexType::kFlat: return ZVEC_CORE_INDEX_FLAT;
+    case zvec::core_interface::IndexType::kIVF:  return ZVEC_CORE_INDEX_IVF;
+    case zvec::core_interface::IndexType::kHNSW: return ZVEC_CORE_INDEX_HNSW;
+    default: return ZVEC_CORE_INDEX_NONE;
+  }
+}
+
+extern "C" zvec_status_t zvec_core_param_get_metric(
+    const zvec_core_param_t *param, zvec_core_metric_type_t *out_metric) {
+  if (!param || !param->ptr || !out_metric)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_metric = static_cast<zvec_core_metric_type_t>(param->ptr->metric_type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_metric(
+    zvec_core_param_t *param, zvec_core_metric_type_t metric) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->metric_type = to_metric(metric);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_data_type(
+    const zvec_core_param_t *param, zvec_core_data_type_t *out_data_type) {
+  if (!param || !param->ptr || !out_data_type)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_data_type = static_cast<zvec_core_data_type_t>(param->ptr->data_type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_data_type(
+    zvec_core_param_t *param, zvec_core_data_type_t data_type) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->data_type = to_data_type(data_type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_dimension(
+    const zvec_core_param_t *param, int *out_dimension) {
+  if (!param || !param->ptr || !out_dimension)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_dimension = param->ptr->dimension;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_dimension(
+    zvec_core_param_t *param, int dimension) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->dimension = dimension;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_is_sparse(
+    const zvec_core_param_t *param, int *out_is_sparse) {
+  if (!param || !param->ptr || !out_is_sparse)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_is_sparse = param->ptr->is_sparse ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_is_sparse(
+    zvec_core_param_t *param, int is_sparse) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->is_sparse = is_sparse != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_is_huge_page(
+    const zvec_core_param_t *param, int *out_is_huge_page) {
+  if (!param || !param->ptr || !out_is_huge_page)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_is_huge_page = param->ptr->is_huge_page ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_is_huge_page(
+    zvec_core_param_t *param, int is_huge_page) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->is_huge_page = is_huge_page != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_use_id_map(
+    const zvec_core_param_t *param, int *out_use_id_map) {
+  if (!param || !param->ptr || !out_use_id_map)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_use_id_map = param->ptr->use_id_map ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_use_id_map(
+    zvec_core_param_t *param, int use_id_map) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->use_id_map = use_id_map != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_quantizer_type(
+    const zvec_core_param_t *param, zvec_core_quantizer_type_t *out_type) {
+  if (!param || !param->ptr || !out_type)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_type = static_cast<zvec_core_quantizer_type_t>(
+      param->ptr->quantizer_param.type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_quantizer_type(
+    zvec_core_param_t *param, zvec_core_quantizer_type_t type) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->quantizer_param.type =
+      static_cast<zvec::core_interface::QuantizerType>(type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_quantizer_num_subquantizers(
+    const zvec_core_param_t *param, int *out_value) {
+  if (!param || !param->ptr || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = param->ptr->quantizer_param.num_subquantizers;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_quantizer_num_subquantizers(
+    zvec_core_param_t *param, int value) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->quantizer_param.num_subquantizers = value;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_quantizer_num_bits(
+    const zvec_core_param_t *param, int *out_value) {
+  if (!param || !param->ptr || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = param->ptr->quantizer_param.num_bits;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_quantizer_num_bits(
+    zvec_core_param_t *param, int value) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->quantizer_param.num_bits = value;
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_core_quantizer_param_t — standalone QuantizerParam handle
+// =============================================================
+
+struct zvec_core_quantizer_param {
+  zvec::core_interface::QuantizerParam value;
+};
+
+extern "C" zvec_status_t zvec_core_quantizer_param_create(
+    zvec_core_quantizer_type_t type,
+    int num_subquantizers,
+    int num_bits,
+    zvec_core_quantizer_param_t **out_param) {
+  if (!out_param)
+    return set_error("out_param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    auto *p = new zvec_core_quantizer_param{
+        zvec::core_interface::QuantizerParam{
+            static_cast<zvec::core_interface::QuantizerType>(type),
+            num_subquantizers,
+            num_bits}};
+    *out_param = p;
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" void zvec_core_quantizer_param_destroy(
+    zvec_core_quantizer_param_t *param) {
+  delete param;
+}
+
+extern "C" zvec_status_t zvec_core_quantizer_param_get_type(
+    const zvec_core_quantizer_param_t *param,
+    zvec_core_quantizer_type_t *out_type) {
+  if (!param || !out_type)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_type =
+      static_cast<zvec_core_quantizer_type_t>(param->value.type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_quantizer_param_set_type(
+    zvec_core_quantizer_param_t *param, zvec_core_quantizer_type_t type) {
+  if (!param)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->value.type =
+      static_cast<zvec::core_interface::QuantizerType>(type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_quantizer_param_get_num_subquantizers(
+    const zvec_core_quantizer_param_t *param, int *out_value) {
+  if (!param || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = param->value.num_subquantizers;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_quantizer_param_set_num_subquantizers(
+    zvec_core_quantizer_param_t *param, int value) {
+  if (!param)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->value.num_subquantizers = value;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_quantizer_param_get_num_bits(
+    const zvec_core_quantizer_param_t *param, int *out_value) {
+  if (!param || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = param->value.num_bits;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_quantizer_param_set_num_bits(
+    zvec_core_quantizer_param_t *param, int value) {
+  if (!param)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->value.num_bits = value;
+  return ZVEC_STATUS_OK;
+}
+
+// SerializableBase: serialize QuantizerParam to JSON
+extern "C" zvec_status_t zvec_core_quantizer_param_to_json(
+    const zvec_core_quantizer_param_t *param, char **out_json) {
+  if (!param || !out_json)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    std::string json = param->value.SerializeToJson(false);
+    char *dup = dup_string(json);
+    if (!dup) return set_error("failed to allocate json string");
+    *out_json = dup;
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+// SerializableBase: deserialize QuantizerParam from JSON
+extern "C" zvec_status_t zvec_core_quantizer_param_from_json(
+    const char *json_str, zvec_core_quantizer_param_t **out_param) {
+  if (!json_str || !out_param)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    auto *p = new zvec_core_quantizer_param{};
+    if (!p->value.DeserializeFromJson(json_str)) {
+      delete p;
+      return set_error("failed to deserialize quantizer param from json");
+    }
+    *out_param = p;
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+// Copy standalone QuantizerParam into an index build param
+extern "C" zvec_status_t zvec_core_param_set_quantizer_param(
+    zvec_core_param_t *param, const zvec_core_quantizer_param_t *qp) {
+  if (!param || !param->ptr || !qp)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->quantizer_param = qp->value;
+  return ZVEC_STATUS_OK;
+}
+
+// Extract a copy of the quantizer_param from an index build param
+extern "C" zvec_status_t zvec_core_param_get_quantizer_param(
+    const zvec_core_param_t *param, zvec_core_quantizer_param_t **out_qp) {
+  if (!param || !param->ptr || !out_qp)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    *out_qp = new zvec_core_quantizer_param{param->ptr->quantizer_param};
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" zvec_status_t zvec_core_param_get_hnsw_m(
+    const zvec_core_param_t *param, int *out_m) {
+  if (!param || !param->ptr || !out_m)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *hp = dynamic_cast<const zvec::core_interface::HNSWIndexParam *>(
+      param->ptr.get());
+  if (!hp) return set_error("param is not HNSW");
+  *out_m = hp->m;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_hnsw_m(
+    zvec_core_param_t *param, int m) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *hp = dynamic_cast<zvec::core_interface::HNSWIndexParam *>(
+      param->ptr.get());
+  if (!hp) return set_error("param is not HNSW");
+  hp->m = m;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_hnsw_ef_construction(
+    const zvec_core_param_t *param, int *out_ef) {
+  if (!param || !param->ptr || !out_ef)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *hp = dynamic_cast<const zvec::core_interface::HNSWIndexParam *>(
+      param->ptr.get());
+  if (!hp) return set_error("param is not HNSW");
+  *out_ef = hp->ef_construction;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_hnsw_ef_construction(
+    zvec_core_param_t *param, int ef) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *hp = dynamic_cast<zvec::core_interface::HNSWIndexParam *>(
+      param->ptr.get());
+  if (!hp) return set_error("param is not HNSW");
+  hp->ef_construction = ef;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_ivf_nlist(
+    const zvec_core_param_t *param, int *out_nlist) {
+  if (!param || !param->ptr || !out_nlist)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip = dynamic_cast<const zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  *out_nlist = ip->nlist;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_ivf_nlist(
+    zvec_core_param_t *param, int nlist) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  ip->nlist = nlist;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_ivf_niters(
+    const zvec_core_param_t *param, int *out_niters) {
+  if (!param || !param->ptr || !out_niters)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip = dynamic_cast<const zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  *out_niters = ip->niters;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_ivf_niters(
+    zvec_core_param_t *param, int niters) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  ip->niters = niters;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_ivf_use_soar(
+    const zvec_core_param_t *param, int *out_use_soar) {
+  if (!param || !param->ptr || !out_use_soar)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip = dynamic_cast<const zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  *out_use_soar = ip->use_soar ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_ivf_use_soar(
+    zvec_core_param_t *param, int use_soar) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  ip->use_soar = use_soar != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_ivf_l1_param(
+    zvec_core_param_t *param, const zvec_core_param_t *l1_param) {
+  if (!param || !param->ptr || !l1_param || !l1_param->ptr)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  ip->l1Index = l1_param->ptr;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_ivf_l2_param(
+    zvec_core_param_t *param, const zvec_core_param_t *l2_param) {
+  if (!param || !param->ptr || !l2_param || !l2_param->ptr)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  ip->l2Index = l2_param->ptr;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_clone(
+    const zvec_core_param_t *param, zvec_core_param_t **out_param) {
+  if (!param || !param->ptr || !out_param)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    std::string json = param->ptr->SerializeToJson();
+    auto cloned = zvec::core_interface::IndexFactory::DeserializeIndexParamFromJson(json);
+    if (!cloned) return set_error("failed to clone param");
+    *out_param = new zvec_core_param{cloned};
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+// ----- version -----
+
+extern "C" zvec_status_t zvec_core_param_get_version(
+    const zvec_core_param_t *param, int *out_version) {
+  if (!param || !param->ptr || !out_version)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_version = param->ptr->version;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_version(
+    zvec_core_param_t *param, int version) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->version = version;
+  return ZVEC_STATUS_OK;
+}
+
+// ----- preprocessor -----
+
+extern "C" zvec_status_t zvec_core_param_get_preprocessor_type(
+    const zvec_core_param_t *param, zvec_core_preprocessor_type_t *out_type) {
+  if (!param || !param->ptr || !out_type)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_type = static_cast<zvec_core_preprocessor_type_t>(
+      param->ptr->preprocess_param.type);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_preprocessor_type(
+    zvec_core_param_t *param, zvec_core_preprocessor_type_t type) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->preprocess_param.type =
+      static_cast<zvec::core_interface::PreprocessorType>(type);
+  return ZVEC_STATUS_OK;
+}
+
+// ----- default_query_param -----
+
+extern "C" zvec_status_t zvec_core_param_set_default_query_param(
+    zvec_core_param_t *param, const zvec_core_query_param_t *qp) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->default_query_param = qp ? qp->ptr->Clone() : nullptr;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_default_query_param(
+    const zvec_core_param_t *param, zvec_core_query_param_t **out_qp) {
+  if (!param || !param->ptr || !out_qp)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!param->ptr->default_query_param) {
+    *out_qp = nullptr;
+    return ZVEC_STATUS_OK;
+  }
+  *out_qp = new zvec_core_query_param{param->ptr->default_query_param->Clone()};
+  return ZVEC_STATUS_OK;
+}
+
+// ----- FlatIndexParam: major_order -----
+// 0 = MO_UNDEFINED, 1 = MO_ROW, 2 = MO_COLUMN
+
+extern "C" zvec_status_t zvec_core_param_get_flat_major_order(
+    const zvec_core_param_t *param, int *out_major_order) {
+  if (!param || !param->ptr || !out_major_order)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *fp = dynamic_cast<const zvec::core_interface::FlatIndexParam *>(
+      param->ptr.get());
+  if (!fp) return set_error("param is not Flat");
+  *out_major_order = static_cast<int>(fp->major_order);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_set_flat_major_order(
+    zvec_core_param_t *param, int major_order) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *fp = dynamic_cast<zvec::core_interface::FlatIndexParam *>(
+      param->ptr.get());
+  if (!fp) return set_error("param is not Flat");
+  fp->major_order =
+      static_cast<zvec::core_interface::IndexMeta::MajorOrder>(major_order);
+  return ZVEC_STATUS_OK;
+}
+
+// ----- IVFIndexParam: get l1/l2 -----
+
+extern "C" zvec_status_t zvec_core_param_get_ivf_l1_param(
+    const zvec_core_param_t *param, zvec_core_param_t **out_l1_param) {
+  if (!param || !param->ptr || !out_l1_param)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip = dynamic_cast<const zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  if (!ip->l1Index) { *out_l1_param = nullptr; return ZVEC_STATUS_OK; }
+  *out_l1_param = new zvec_core_param{ip->l1Index};
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_param_get_ivf_l2_param(
+    const zvec_core_param_t *param, zvec_core_param_t **out_l2_param) {
+  if (!param || !param->ptr || !out_l2_param)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip = dynamic_cast<const zvec::core_interface::IVFIndexParam *>(
+      param->ptr.get());
+  if (!ip) return set_error("param is not IVF");
+  if (!ip->l2Index) { *out_l2_param = nullptr; return ZVEC_STATUS_OK; }
+  *out_l2_param = new zvec_core_param{ip->l2Index};
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_core_query_param_t — full getters/setters
+// =============================================================
+
+extern "C" zvec_status_t zvec_core_query_param_get_topk(
+    const zvec_core_query_param_t *param, uint32_t *out_topk) {
+  if (!param || !param->ptr || !out_topk)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_topk = param->ptr->topk;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_topk(
+    zvec_core_query_param_t *param, uint32_t topk) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->topk = topk;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_fetch_vector(
+    const zvec_core_query_param_t *param, int *out_fetch_vector) {
+  if (!param || !param->ptr || !out_fetch_vector)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_fetch_vector = param->ptr->fetch_vector ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_fetch_vector(
+    zvec_core_query_param_t *param, int fetch_vector) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->fetch_vector = fetch_vector != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_radius(
+    const zvec_core_query_param_t *param, float *out_radius) {
+  if (!param || !param->ptr || !out_radius)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_radius = param->ptr->radius;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_radius(
+    zvec_core_query_param_t *param, float radius) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->radius = radius;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_is_linear(
+    const zvec_core_query_param_t *param, int *out_is_linear) {
+  if (!param || !param->ptr || !out_is_linear)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_is_linear = param->ptr->is_linear ? 1 : 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_is_linear(
+    zvec_core_query_param_t *param, int is_linear) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  param->ptr->is_linear = is_linear != 0;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_hnsw_ef_search(
+    const zvec_core_query_param_t *param, uint32_t *out_ef_search) {
+  if (!param || !param->ptr || !out_ef_search)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *hp =
+      dynamic_cast<const zvec::core_interface::HNSWQueryParam *>(param->ptr.get());
+  if (!hp) return set_error("query param is not HNSW");
+  *out_ef_search = hp->ef_search;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_hnsw_ef_search(
+    zvec_core_query_param_t *param, uint32_t ef_search) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *hp = dynamic_cast<zvec::core_interface::HNSWQueryParam *>(param->ptr.get());
+  if (!hp) return set_error("query param is not HNSW");
+  hp->ef_search = ef_search;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_ivf_nprobe(
+    const zvec_core_query_param_t *param, int *out_nprobe) {
+  if (!param || !param->ptr || !out_nprobe)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip =
+      dynamic_cast<const zvec::core_interface::IVFQueryParam *>(param->ptr.get());
+  if (!ip) return set_error("query param is not IVF");
+  *out_nprobe = ip->nprobe;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_ivf_nprobe(
+    zvec_core_query_param_t *param, int nprobe) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFQueryParam *>(param->ptr.get());
+  if (!ip) return set_error("query param is not IVF");
+  ip->nprobe = nprobe;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_clone(
+    const zvec_core_query_param_t *param, zvec_core_query_param_t **out_param) {
+  if (!param || !param->ptr || !out_param)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    auto cloned = param->ptr->Clone();
+    *out_param = new zvec_core_query_param{cloned};
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+// ----- bf_pks -----
+
+extern "C" zvec_status_t zvec_core_query_param_set_bf_pks(
+    zvec_core_query_param_t *param, const uint64_t *pks, size_t count) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!pks || count == 0) {
+    param->ptr->bf_pks = nullptr;
+    return ZVEC_STATUS_OK;
+  }
+  param->ptr->bf_pks = std::make_shared<std::vector<uint64_t>>(pks, pks + count);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_bf_pks(
+    const zvec_core_query_param_t *param, uint64_t **out_pks, size_t *out_count) {
+  if (!param || !param->ptr || !out_pks || !out_count)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!param->ptr->bf_pks || param->ptr->bf_pks->empty()) {
+    *out_pks = nullptr;
+    *out_count = 0;
+    return ZVEC_STATUS_OK;
+  }
+  const auto &v = *param->ptr->bf_pks;
+  auto *buf = static_cast<uint64_t *>(std::malloc(v.size() * sizeof(uint64_t)));
+  if (!buf) return set_error("failed to allocate bf_pks");
+  std::memcpy(buf, v.data(), v.size() * sizeof(uint64_t));
+  *out_pks = buf;
+  *out_count = v.size();
+  return ZVEC_STATUS_OK;
+}
+
+// ----- refiner scale_factor -----
+
+extern "C" zvec_status_t zvec_core_query_param_get_refiner_scale_factor(
+    const zvec_core_query_param_t *param, float *out_scale_factor) {
+  if (!param || !param->ptr || !out_scale_factor)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!param->ptr->refiner_param) {
+    *out_scale_factor = 0.0f;
+    return ZVEC_STATUS_OK;
+  }
+  *out_scale_factor = param->ptr->refiner_param->scale_factor_;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_refiner_scale_factor(
+    zvec_core_query_param_t *param, float scale_factor) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!param->ptr->refiner_param) {
+    param->ptr->refiner_param =
+        std::make_shared<zvec::core_interface::RefinerParam>();
+  }
+  param->ptr->refiner_param->scale_factor_ = scale_factor;
+  return ZVEC_STATUS_OK;
+}
+
+// ----- IVF nested l1/l2 query params -----
+
+extern "C" zvec_status_t zvec_core_query_param_set_ivf_l1_query_param(
+    zvec_core_query_param_t *param, const zvec_core_query_param_t *l1_qp) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFQueryParam *>(param->ptr.get());
+  if (!ip) return set_error("query param is not IVF");
+  ip->l1QueryParam = l1_qp ? l1_qp->ptr->Clone() : nullptr;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_set_ivf_l2_query_param(
+    zvec_core_query_param_t *param, const zvec_core_query_param_t *l2_qp) {
+  if (!param || !param->ptr)
+    return set_error("param is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  auto *ip = dynamic_cast<zvec::core_interface::IVFQueryParam *>(param->ptr.get());
+  if (!ip) return set_error("query param is not IVF");
+  ip->l2QueryParam = l2_qp ? l2_qp->ptr->Clone() : nullptr;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_ivf_l1_query_param(
+    const zvec_core_query_param_t *param, zvec_core_query_param_t **out_l1_qp) {
+  if (!param || !param->ptr || !out_l1_qp)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip =
+      dynamic_cast<const zvec::core_interface::IVFQueryParam *>(param->ptr.get());
+  if (!ip) return set_error("query param is not IVF");
+  if (!ip->l1QueryParam) { *out_l1_qp = nullptr; return ZVEC_STATUS_OK; }
+  *out_l1_qp = new zvec_core_query_param{ip->l1QueryParam->Clone()};
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_query_param_get_ivf_l2_query_param(
+    const zvec_core_query_param_t *param, zvec_core_query_param_t **out_l2_qp) {
+  if (!param || !param->ptr || !out_l2_qp)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *ip =
+      dynamic_cast<const zvec::core_interface::IVFQueryParam *>(param->ptr.get());
+  if (!ip) return set_error("query param is not IVF");
+  if (!ip->l2QueryParam) { *out_l2_qp = nullptr; return ZVEC_STATUS_OK; }
+  *out_l2_qp = new zvec_core_query_param{ip->l2QueryParam->Clone()};
+  return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// zvec_core_index — merge + get_param
+// =============================================================
+
+extern "C" zvec_status_t zvec_core_index_merge(
+    zvec_core_index_t *index,
+    zvec_core_index_t **source_indexes,
+    size_t count,
+    uint32_t write_concurrency) {
+  if (!index || !index->ptr || !source_indexes || count == 0)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    std::vector<zvec::core_interface::Index::Pointer> sources;
+    sources.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      if (!source_indexes[i] || !source_indexes[i]->ptr)
+        return set_error("source index is null", ZVEC_STATUS_INVALID_ARGUMENT);
+      sources.push_back(source_indexes[i]->ptr);
+    }
+    zvec::core_interface::IndexFilter filter;
+    zvec::core_interface::MergeOptions opts;
+    opts.write_concurrency = write_concurrency > 0 ? write_concurrency : 1;
+    int ret = index->ptr->Merge(sources, filter, opts);
+    if (ret != 0) return set_error("index merge failed");
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+extern "C" zvec_status_t zvec_core_index_get_param(
+    const zvec_core_index_t *index, zvec_core_param_t **out_param) {
+  if (!index || !index->ptr || !out_param)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    auto p = index->ptr->GetParam();
+    if (!p) return set_error("failed to get param from index");
+    *out_param = new zvec_core_param{p};
+    return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) {
+    return set_error(e.what());
+  }
+}
+
+// =============================================================
+// zvec_core_search_result_t — vector fetch accessors
+// =============================================================
+
+extern "C" zvec_status_t zvec_core_search_result_get_vector_bytes(
+    const zvec_core_search_result_t *result,
+    size_t idx,
+    const void **out_data,
+    size_t *out_bytes) {
+  if (!result || !out_data || !out_bytes)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (idx >= result->keys.size())
+    return set_error("index out of range", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (idx >= result->dense_vectors.size() ||
+      result->dense_vectors[idx].empty()) {
+    *out_data = nullptr;
+    *out_bytes = 0;
+    return ZVEC_STATUS_OK;
+  }
+  *out_data = result->dense_vectors[idx].data();
+  *out_bytes = result->dense_vectors[idx].size();
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_core_search_result_get_sparse_vector(
+    const zvec_core_search_result_t *result,
+    size_t idx,
+    const uint32_t **out_indices,
+    const void **out_values,
+    size_t *out_count,
+    size_t *out_value_bytes) {
+  if (!result || !out_indices || !out_values || !out_count || !out_value_bytes)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (idx >= result->keys.size())
+    return set_error("index out of range", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (idx >= result->sparse_indices.size() ||
+      result->sparse_indices[idx].empty()) {
+    *out_indices = nullptr;
+    *out_values = nullptr;
+    *out_count = 0;
+    *out_value_bytes = 0;
+    return ZVEC_STATUS_OK;
+  }
+  const std::string &idx_buf = result->sparse_indices[idx];
+  const std::string &val_buf = result->sparse_values[idx];
+  *out_indices = reinterpret_cast<const uint32_t *>(idx_buf.data());
+  *out_count = idx_buf.size() / sizeof(uint32_t);
+  *out_values = val_buf.data();
+  *out_value_bytes = val_buf.size();
+  return ZVEC_STATUS_OK;
+}
+

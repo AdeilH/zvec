@@ -102,6 +102,256 @@ zvec_status_t zvec_core_param_to_json(
 
 void zvec_core_param_destroy(zvec_core_param_t* param);
 
+// =============================================================
+// zvec_core_param_t — base param create + full getters/setters
+// =============================================================
+
+// Create a raw BaseIndexParam (index_type=none, useful as a sub-param for IVF)
+zvec_status_t zvec_core_param_create_base(
+    zvec_core_metric_type_t metric,
+    zvec_core_data_type_t data_type,
+    int dimension,
+    zvec_core_param_t** out_param);
+
+// Index type query
+zvec_core_index_type_t zvec_core_param_get_index_type(
+    const zvec_core_param_t* param);
+
+// Metric
+zvec_status_t zvec_core_param_get_metric(
+    const zvec_core_param_t* param,
+    zvec_core_metric_type_t* out_metric);
+zvec_status_t zvec_core_param_set_metric(
+    zvec_core_param_t* param,
+    zvec_core_metric_type_t metric);
+
+// Data type
+zvec_status_t zvec_core_param_get_data_type(
+    const zvec_core_param_t* param,
+    zvec_core_data_type_t* out_data_type);
+zvec_status_t zvec_core_param_set_data_type(
+    zvec_core_param_t* param,
+    zvec_core_data_type_t data_type);
+
+// Dimension
+zvec_status_t zvec_core_param_get_dimension(
+    const zvec_core_param_t* param,
+    int* out_dimension);
+zvec_status_t zvec_core_param_set_dimension(
+    zvec_core_param_t* param,
+    int dimension);
+
+// is_sparse
+zvec_status_t zvec_core_param_get_is_sparse(
+    const zvec_core_param_t* param,
+    int* out_is_sparse);
+zvec_status_t zvec_core_param_set_is_sparse(
+    zvec_core_param_t* param,
+    int is_sparse);
+
+// is_huge_page
+zvec_status_t zvec_core_param_get_is_huge_page(
+    const zvec_core_param_t* param,
+    int* out_is_huge_page);
+zvec_status_t zvec_core_param_set_is_huge_page(
+    zvec_core_param_t* param,
+    int is_huge_page);
+
+// use_id_map
+zvec_status_t zvec_core_param_get_use_id_map(
+    const zvec_core_param_t* param,
+    int* out_use_id_map);
+zvec_status_t zvec_core_param_set_use_id_map(
+    zvec_core_param_t* param,
+    int use_id_map);
+
+// Quantizer type
+typedef enum {
+  ZVEC_CORE_QUANTIZER_NONE      = 0,
+  ZVEC_CORE_QUANTIZER_PQ        = 1,
+  ZVEC_CORE_QUANTIZER_QUICK_ADC = 2,
+  ZVEC_CORE_QUANTIZER_AQ        = 3,
+  ZVEC_CORE_QUANTIZER_FP16      = 4,
+  ZVEC_CORE_QUANTIZER_INT8      = 5,
+  ZVEC_CORE_QUANTIZER_INT4      = 6
+} zvec_core_quantizer_type_t;
+
+zvec_status_t zvec_core_param_get_quantizer_type(
+    const zvec_core_param_t* param,
+    zvec_core_quantizer_type_t* out_type);
+zvec_status_t zvec_core_param_set_quantizer_type(
+    zvec_core_param_t* param,
+    zvec_core_quantizer_type_t type);
+zvec_status_t zvec_core_param_get_quantizer_num_subquantizers(
+    const zvec_core_param_t* param,
+    int* out_value);
+zvec_status_t zvec_core_param_set_quantizer_num_subquantizers(
+    zvec_core_param_t* param,
+    int value);
+zvec_status_t zvec_core_param_get_quantizer_num_bits(
+    const zvec_core_param_t* param,
+    int* out_value);
+zvec_status_t zvec_core_param_set_quantizer_num_bits(
+    zvec_core_param_t* param,
+    int value);
+
+// =============================================================
+// zvec_core_quantizer_param_t
+// Standalone opaque handle for QuantizerParam, mirroring the
+// SerializableBase interface: create / destroy / get / set /
+// serialize to JSON / deserialize from JSON.
+// =============================================================
+
+typedef struct zvec_core_quantizer_param zvec_core_quantizer_param_t;
+
+// Create a standalone QuantizerParam.
+zvec_status_t zvec_core_quantizer_param_create(
+    zvec_core_quantizer_type_t type,
+    int num_subquantizers,
+    int num_bits,
+    zvec_core_quantizer_param_t** out_param);
+
+void zvec_core_quantizer_param_destroy(zvec_core_quantizer_param_t* param);
+
+// Getters / setters
+zvec_status_t zvec_core_quantizer_param_get_type(
+    const zvec_core_quantizer_param_t* param,
+    zvec_core_quantizer_type_t* out_type);
+zvec_status_t zvec_core_quantizer_param_set_type(
+    zvec_core_quantizer_param_t* param,
+    zvec_core_quantizer_type_t type);
+
+zvec_status_t zvec_core_quantizer_param_get_num_subquantizers(
+    const zvec_core_quantizer_param_t* param,
+    int* out_value);
+zvec_status_t zvec_core_quantizer_param_set_num_subquantizers(
+    zvec_core_quantizer_param_t* param,
+    int value);
+
+zvec_status_t zvec_core_quantizer_param_get_num_bits(
+    const zvec_core_quantizer_param_t* param,
+    int* out_value);
+zvec_status_t zvec_core_quantizer_param_set_num_bits(
+    zvec_core_quantizer_param_t* param,
+    int value);
+
+// SerializableBase — serialize the QuantizerParam to a JSON string.
+// Caller must free the returned string with zvec_free().
+zvec_status_t zvec_core_quantizer_param_to_json(
+    const zvec_core_quantizer_param_t* param,
+    char** out_json);
+
+// SerializableBase — populate a QuantizerParam from a JSON string.
+zvec_status_t zvec_core_quantizer_param_from_json(
+    const char* json_str,
+    zvec_core_quantizer_param_t** out_param);
+
+// Copy a standalone QuantizerParam into the quantizer_param field of an index
+// build param.
+zvec_status_t zvec_core_param_set_quantizer_param(
+    zvec_core_param_t* param,
+    const zvec_core_quantizer_param_t* qp);
+
+// Extract the quantizer_param field of an index build param as a standalone
+// QuantizerParam (caller must destroy).
+zvec_status_t zvec_core_param_get_quantizer_param(
+    const zvec_core_param_t* param,
+    zvec_core_quantizer_param_t** out_qp);
+
+// HNSW-specific getters/setters
+zvec_status_t zvec_core_param_get_hnsw_m(
+    const zvec_core_param_t* param,
+    int* out_m);
+zvec_status_t zvec_core_param_set_hnsw_m(
+    zvec_core_param_t* param,
+    int m);
+zvec_status_t zvec_core_param_get_hnsw_ef_construction(
+    const zvec_core_param_t* param,
+    int* out_ef);
+zvec_status_t zvec_core_param_set_hnsw_ef_construction(
+    zvec_core_param_t* param,
+    int ef);
+
+// IVF-specific getters/setters
+zvec_status_t zvec_core_param_get_ivf_nlist(
+    const zvec_core_param_t* param,
+    int* out_nlist);
+zvec_status_t zvec_core_param_set_ivf_nlist(
+    zvec_core_param_t* param,
+    int nlist);
+zvec_status_t zvec_core_param_get_ivf_niters(
+    const zvec_core_param_t* param,
+    int* out_niters);
+zvec_status_t zvec_core_param_set_ivf_niters(
+    zvec_core_param_t* param,
+    int niters);
+zvec_status_t zvec_core_param_get_ivf_use_soar(
+    const zvec_core_param_t* param,
+    int* out_use_soar);
+zvec_status_t zvec_core_param_set_ivf_use_soar(
+    zvec_core_param_t* param,
+    int use_soar);
+// Set nested L1/L2 sub-params for IVF (copies param; caller owns original)
+zvec_status_t zvec_core_param_set_ivf_l1_param(
+    zvec_core_param_t* param,
+    const zvec_core_param_t* l1_param);
+zvec_status_t zvec_core_param_set_ivf_l2_param(
+    zvec_core_param_t* param,
+    const zvec_core_param_t* l2_param);
+
+// version
+zvec_status_t zvec_core_param_get_version(
+    const zvec_core_param_t* param,
+    int* out_version);
+zvec_status_t zvec_core_param_set_version(
+    zvec_core_param_t* param,
+    int version);
+
+// Preprocessor type
+typedef enum {
+  ZVEC_CORE_PREPROCESSOR_NONE = 0,
+  ZVEC_CORE_PREPROCESSOR_PCA  = 1,
+  ZVEC_CORE_PREPROCESSOR_OPQ  = 2
+} zvec_core_preprocessor_type_t;
+
+zvec_status_t zvec_core_param_get_preprocessor_type(
+    const zvec_core_param_t* param,
+    zvec_core_preprocessor_type_t* out_type);
+zvec_status_t zvec_core_param_set_preprocessor_type(
+    zvec_core_param_t* param,
+    zvec_core_preprocessor_type_t type);
+
+// default_query_param — set/get a default query param embedded in the build param
+// (used by IVF nesting: l1/l2 default topk etc.)
+zvec_status_t zvec_core_param_set_default_query_param(
+    zvec_core_param_t* param,
+    const zvec_core_query_param_t* qp);
+// Returns a newly allocated copy; caller must destroy it.
+zvec_status_t zvec_core_param_get_default_query_param(
+    const zvec_core_param_t* param,
+    zvec_core_query_param_t** out_qp);
+
+// Flat-specific: major_order (0=row, 1=column)
+zvec_status_t zvec_core_param_get_flat_major_order(
+    const zvec_core_param_t* param,
+    int* out_major_order);
+zvec_status_t zvec_core_param_set_flat_major_order(
+    zvec_core_param_t* param,
+    int major_order);
+
+// IVF: get nested L1/L2 sub-params (returned param is a view — caller must destroy)
+zvec_status_t zvec_core_param_get_ivf_l1_param(
+    const zvec_core_param_t* param,
+    zvec_core_param_t** out_l1_param);
+zvec_status_t zvec_core_param_get_ivf_l2_param(
+    const zvec_core_param_t* param,
+    zvec_core_param_t** out_l2_param);
+
+// Clone a param (deep copy)
+zvec_status_t zvec_core_param_clone(
+    const zvec_core_param_t* param,
+    zvec_core_param_t** out_param);
+
 // Query parameter helpers
 zvec_status_t zvec_core_query_param_create_hnsw(
     int topk,
@@ -143,6 +393,95 @@ zvec_status_t zvec_core_query_param_from_json_flat(
     zvec_core_query_param_t** out_param);
 
 void zvec_core_query_param_destroy(zvec_core_query_param_t* param);
+
+// =============================================================
+// zvec_core_query_param_t — full getters/setters
+// =============================================================
+
+zvec_status_t zvec_core_query_param_get_topk(
+    const zvec_core_query_param_t* param,
+    uint32_t* out_topk);
+zvec_status_t zvec_core_query_param_set_topk(
+    zvec_core_query_param_t* param,
+    uint32_t topk);
+
+zvec_status_t zvec_core_query_param_get_fetch_vector(
+    const zvec_core_query_param_t* param,
+    int* out_fetch_vector);
+zvec_status_t zvec_core_query_param_set_fetch_vector(
+    zvec_core_query_param_t* param,
+    int fetch_vector);
+
+zvec_status_t zvec_core_query_param_get_radius(
+    const zvec_core_query_param_t* param,
+    float* out_radius);
+zvec_status_t zvec_core_query_param_set_radius(
+    zvec_core_query_param_t* param,
+    float radius);
+
+zvec_status_t zvec_core_query_param_get_is_linear(
+    const zvec_core_query_param_t* param,
+    int* out_is_linear);
+zvec_status_t zvec_core_query_param_set_is_linear(
+    zvec_core_query_param_t* param,
+    int is_linear);
+
+// HNSW-specific
+zvec_status_t zvec_core_query_param_get_hnsw_ef_search(
+    const zvec_core_query_param_t* param,
+    uint32_t* out_ef_search);
+zvec_status_t zvec_core_query_param_set_hnsw_ef_search(
+    zvec_core_query_param_t* param,
+    uint32_t ef_search);
+
+// IVF-specific
+zvec_status_t zvec_core_query_param_get_ivf_nprobe(
+    const zvec_core_query_param_t* param,
+    int* out_nprobe);
+zvec_status_t zvec_core_query_param_set_ivf_nprobe(
+    zvec_core_query_param_t* param,
+    int nprobe);
+
+// Clone a query param (deep copy)
+zvec_status_t zvec_core_query_param_clone(
+    const zvec_core_query_param_t* param,
+    zvec_core_query_param_t** out_param);
+
+// bf_pks — optional allowlist of doc-ids for brute-force search
+// Pass NULL / 0 to clear.
+zvec_status_t zvec_core_query_param_set_bf_pks(
+    zvec_core_query_param_t* param,
+    const uint64_t* pks,
+    size_t count);
+zvec_status_t zvec_core_query_param_get_bf_pks(
+    const zvec_core_query_param_t* param,
+    uint64_t** out_pks,
+    size_t* out_count);
+
+// refiner — scale_factor for AQ/quantized refiner
+zvec_status_t zvec_core_query_param_get_refiner_scale_factor(
+    const zvec_core_query_param_t* param,
+    float* out_scale_factor);
+zvec_status_t zvec_core_query_param_set_refiner_scale_factor(
+    zvec_core_query_param_t* param,
+    float scale_factor);
+
+// IVF nested l1/l2 query params
+// Set nested query param for IVF l1 coarse search (e.g. HNSWQueryParam)
+zvec_status_t zvec_core_query_param_set_ivf_l1_query_param(
+    zvec_core_query_param_t* param,
+    const zvec_core_query_param_t* l1_qp);
+// Set nested query param for IVF l2 fine search (e.g. FlatQueryParam)
+zvec_status_t zvec_core_query_param_set_ivf_l2_query_param(
+    zvec_core_query_param_t* param,
+    const zvec_core_query_param_t* l2_qp);
+// Get nested l1/l2 query params (caller must destroy returned value)
+zvec_status_t zvec_core_query_param_get_ivf_l1_query_param(
+    const zvec_core_query_param_t* param,
+    zvec_core_query_param_t** out_l1_qp);
+zvec_status_t zvec_core_query_param_get_ivf_l2_query_param(
+    const zvec_core_query_param_t* param,
+    zvec_core_query_param_t** out_l2_qp);
 
 // Index lifecycle
 zvec_status_t zvec_core_index_create(
@@ -212,6 +551,19 @@ zvec_status_t zvec_core_index_get_param_json(
     const zvec_core_index_t* index,
     char** out_json);
 
+// Merge multiple source indexes into this index (all must share the same param)
+// write_concurrency: number of parallel writers (0 = default 1)
+zvec_status_t zvec_core_index_merge(
+    zvec_core_index_t* index,
+    zvec_core_index_t** source_indexes,
+    size_t count,
+    uint32_t write_concurrency);
+
+// Get the live param of an index (caller must destroy the returned param)
+zvec_status_t zvec_core_index_get_param(
+    const zvec_core_index_t* index,
+    zvec_core_param_t** out_param);
+
 // Search result helpers
 size_t zvec_core_search_result_size(const zvec_core_search_result_t* result);
 zvec_status_t zvec_core_search_result_get(
@@ -219,6 +571,24 @@ zvec_status_t zvec_core_search_result_get(
     size_t idx,
     uint64_t* out_key,
     float* out_score);
+
+// Retrieve fetched dense vector bytes at idx (only valid when fetch_vector=true)
+// out_data points into internal buffer; valid until result is destroyed.
+zvec_status_t zvec_core_search_result_get_vector_bytes(
+    const zvec_core_search_result_t* result,
+    size_t idx,
+    const void** out_data,
+    size_t* out_bytes);
+
+// Retrieve fetched sparse vector at idx (only valid when fetch_vector=true)
+zvec_status_t zvec_core_search_result_get_sparse_vector(
+    const zvec_core_search_result_t* result,
+    size_t idx,
+    const uint32_t** out_indices,
+    const void** out_values,
+    size_t* out_count,
+    size_t* out_value_bytes);
+
 void zvec_core_search_result_destroy(zvec_core_search_result_t* result);
 
 // Core framework factory helpers
@@ -359,6 +729,11 @@ typedef struct zvec_db_collection zvec_db_collection_t;
 typedef struct zvec_db_query_params zvec_db_query_params_t;
 typedef struct zvec_db_query zvec_db_query_t;
 typedef struct zvec_db_query_result zvec_db_query_result_t;
+
+// Vector query (with optional query-by-id support, multi-vector queries, reranker)
+typedef struct zvec_db_vector_query zvec_db_vector_query_t;
+typedef struct zvec_db_multi_query zvec_db_multi_query_t;
+typedef struct zvec_db_reranker zvec_db_reranker_t;
 
 typedef enum {
   ZVEC_DB_DT_UNDEFINED = 0,
@@ -1200,6 +1575,188 @@ zvec_status_t zvec_ailego_string_split(
     char*** out_items,
     size_t* out_count);
 void zvec_ailego_string_split_free(char** items, size_t count);
+
+// =============================================================
+// zvec_db_query_t — missing getters
+// =============================================================
+
+zvec_status_t zvec_db_query_get_topk(
+    const zvec_db_query_t* query,
+    int* out_topk);
+zvec_status_t zvec_db_query_get_filter(
+    const zvec_db_query_t* query,
+    char** out_filter);
+zvec_status_t zvec_db_query_get_field_name(
+    const zvec_db_query_t* query,
+    char** out_field_name);
+zvec_status_t zvec_db_query_get_include_vector(
+    const zvec_db_query_t* query,
+    int* out_include_vector);
+zvec_status_t zvec_db_query_get_include_doc_id(
+    const zvec_db_query_t* query,
+    int* out_include_doc_id);
+zvec_status_t zvec_db_query_get_output_fields(
+    const zvec_db_query_t* query,
+    char*** out_fields,
+    size_t* out_count);
+
+// =============================================================
+// zvec_db_query_result_t — score accessor
+// =============================================================
+
+// Retrieve the score of the document at index idx in the result set.
+// Scores are computed by the underlying metric; higher = more similar
+// (after sign normalisation applied by the engine).
+zvec_status_t zvec_db_query_result_get_score(
+    const zvec_db_query_result_t* result,
+    size_t idx,
+    float* out_score);
+
+// =============================================================
+// zvec_db_vector_query_t
+// A higher-level query object that mirrors Python VectorQuery:
+//   - query by explicit vector bytes  OR
+//   - query by document PK (the engine fetches the vector at search time)
+//   - optional index-specific query params
+//   - topk / filter / include_vector / include_doc_id / output_fields
+// =============================================================
+
+zvec_status_t zvec_db_vector_query_create(
+    const char* field_name,
+    zvec_db_vector_query_t** out_query);
+void zvec_db_vector_query_destroy(zvec_db_vector_query_t* query);
+
+// Set query vector as raw bytes (fp32 / fp16 / int8, etc.)
+zvec_status_t zvec_db_vector_query_set_dense_vector_bytes(
+    zvec_db_vector_query_t* query,
+    const void* data,
+    size_t bytes);
+
+// Set query vector as fp32 convenience helper
+zvec_status_t zvec_db_vector_query_set_dense_vector_fp32(
+    zvec_db_vector_query_t* query,
+    const float* values,
+    size_t count);
+
+// Set sparse query vector
+zvec_status_t zvec_db_vector_query_set_sparse_vector(
+    zvec_db_vector_query_t* query,
+    const uint32_t* indices,
+    const void* values,
+    size_t count,
+    size_t value_bytes);
+
+// Query-by-pk: the engine fetches the stored vector for pk at search time.
+zvec_status_t zvec_db_vector_query_set_id(
+    zvec_db_vector_query_t* query,
+    const char* pk);
+
+zvec_status_t zvec_db_vector_query_set_topk(
+    zvec_db_vector_query_t* query,
+    int topk);
+zvec_status_t zvec_db_vector_query_set_filter(
+    zvec_db_vector_query_t* query,
+    const char* filter);
+zvec_status_t zvec_db_vector_query_set_include_vector(
+    zvec_db_vector_query_t* query,
+    int include_vector);
+zvec_status_t zvec_db_vector_query_set_include_doc_id(
+    zvec_db_vector_query_t* query,
+    int include_doc_id);
+zvec_status_t zvec_db_vector_query_set_output_fields(
+    zvec_db_vector_query_t* query,
+    const char** fields,
+    size_t count);
+zvec_status_t zvec_db_vector_query_set_params(
+    zvec_db_vector_query_t* query,
+    const zvec_db_query_params_t* params);
+
+// Getters
+zvec_status_t zvec_db_vector_query_get_field_name(
+    const zvec_db_vector_query_t* query,
+    char** out_field_name);
+zvec_status_t zvec_db_vector_query_get_topk(
+    const zvec_db_vector_query_t* query,
+    int* out_topk);
+zvec_status_t zvec_db_vector_query_get_filter(
+    const zvec_db_vector_query_t* query,
+    char** out_filter);
+zvec_status_t zvec_db_vector_query_has_id(
+    const zvec_db_vector_query_t* query,
+    int* out_has_id);
+zvec_status_t zvec_db_vector_query_has_vector(
+    const zvec_db_vector_query_t* query,
+    int* out_has_vector);
+
+// Execute a single vector query against a collection.
+zvec_status_t zvec_db_collection_vector_query(
+    zvec_db_collection_t* collection,
+    const zvec_db_vector_query_t* query,
+    zvec_db_query_result_t** out_result);
+
+// =============================================================
+// zvec_db_reranker_t
+// Client-side RRF / Weighted reranker that fuses multiple
+// per-field result sets into a single ranked list.
+// =============================================================
+
+typedef enum {
+  ZVEC_DB_RERANKER_RRF      = 0,  // Reciprocal Rank Fusion
+  ZVEC_DB_RERANKER_WEIGHTED = 1   // Weighted score fusion
+} zvec_db_reranker_type_t;
+
+// Create an RRF reranker.
+//   topn          : number of results to keep after fusion (0 = keep all)
+//   rank_constant : RRF rank constant k (default 60)
+zvec_status_t zvec_db_reranker_create_rrf(
+    int topn,
+    int rank_constant,
+    zvec_db_reranker_t** out_reranker);
+
+// Create a Weighted reranker.
+//   topn    : number of results to keep after fusion (0 = keep all)
+//   weights : per-field weight array; must have `count` elements
+//   count   : number of fields / weights
+zvec_status_t zvec_db_reranker_create_weighted(
+    int topn,
+    const float* weights,
+    size_t count,
+    zvec_db_reranker_t** out_reranker);
+
+void zvec_db_reranker_destroy(zvec_db_reranker_t* reranker);
+
+// =============================================================
+// zvec_db_multi_query_t
+// Execute multiple VectorQuery objects in parallel and fuse their
+// results, optionally with a reranker.
+// =============================================================
+
+zvec_status_t zvec_db_multi_query_create(zvec_db_multi_query_t** out_mq);
+void zvec_db_multi_query_destroy(zvec_db_multi_query_t* mq);
+
+// Add a vector query to the multi-query set (ownership is NOT transferred;
+// caller must keep the vector_query alive until zvec_db_collection_multi_query
+// returns).
+zvec_status_t zvec_db_multi_query_add(
+    zvec_db_multi_query_t* mq,
+    const zvec_db_vector_query_t* query);
+
+// Set common topk for the fused result (overrides per-query topk for fusion).
+zvec_status_t zvec_db_multi_query_set_topk(
+    zvec_db_multi_query_t* mq,
+    int topk);
+
+// Attach an optional reranker (NOT transferred; caller owns it).
+zvec_status_t zvec_db_multi_query_set_reranker(
+    zvec_db_multi_query_t* mq,
+    const zvec_db_reranker_t* reranker);
+
+// Execute all queries in the set and fuse results.
+// Returns a single zvec_db_query_result_t with fused + ranked docs.
+zvec_status_t zvec_db_collection_multi_query(
+    zvec_db_collection_t* collection,
+    const zvec_db_multi_query_t* mq,
+    zvec_db_query_result_t** out_result);
 
 #ifdef __cplusplus
 }
