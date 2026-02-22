@@ -22,6 +22,19 @@
 #include <zvec/db/schema.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/float_helper.h>
+#include <zvec/ailego/utility/time_helper.h>
+#include <zvec/ailego/utility/file_helper.h>
+#include <zvec/ailego/hash/crc32c.h>
+#include <zvec/ailego/hash/jump_hash.h>
+#include <zvec/ailego/encoding/json.h>
+#include <zvec/ailego/io/file.h>
+#include <zvec/ailego/io/mmap_file.h>
+#include <zvec/ailego/logger/logger.h>
+#include <ailego/container/bloom_filter.h>
+#include <ailego/utility/bitset_helper.h>
+#include <ailego/utility/concurrency_helper.h>
+#include <ailego/utility/memory_helper.h>
+#include <ailego/utility/dl_helper.h>
 
 namespace {
 
@@ -75,7 +88,20 @@ zvec_status_t status_from_db_status(const zvec::Status &status) {
   if (status.ok()) {
     return ZVEC_STATUS_OK;
   }
-  return set_error(status.message());
+  set_error(status.message());
+  switch (status.code()) {
+    case zvec::StatusCode::NOT_FOUND:          return ZVEC_STATUS_NOT_FOUND;
+    case zvec::StatusCode::ALREADY_EXISTS:     return ZVEC_STATUS_ALREADY_EXISTS;
+    case zvec::StatusCode::INVALID_ARGUMENT:   return ZVEC_STATUS_INVALID_ARGUMENT;
+    case zvec::StatusCode::PERMISSION_DENIED:  return ZVEC_STATUS_PERMISSION_DENIED;
+    case zvec::StatusCode::FAILED_PRECONDITION:return ZVEC_STATUS_FAILED_PRECONDITION;
+    case zvec::StatusCode::RESOURCE_EXHAUSTED: return ZVEC_STATUS_RESOURCE_EXHAUSTED;
+    case zvec::StatusCode::UNAVAILABLE:        return ZVEC_STATUS_UNAVAILABLE;
+    case zvec::StatusCode::INTERNAL_ERROR:     return ZVEC_STATUS_INTERNAL_ERROR;
+    case zvec::StatusCode::NOT_SUPPORTED:      return ZVEC_STATUS_NOT_SUPPORTED;
+    case zvec::StatusCode::UNKNOWN:            return ZVEC_STATUS_UNKNOWN;
+    default:                                   return ZVEC_STATUS_ERR;
+  }
 }
 
 }  // namespace
@@ -4229,6 +4255,127 @@ extern "C" zvec_status_t zvec_db_global_config_init(
       zvec::GlobalConfig::Instance().Initialize(config->data));
 }
 
+// =============================================================
+// zvec_db_config_t — getters
+// =============================================================
+
+extern "C" zvec_status_t zvec_db_config_get_memory_limit_bytes(
+    const zvec_db_config_t *config, uint64_t *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = config->data.memory_limit_bytes;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_query_thread_count(
+    const zvec_db_config_t *config, uint32_t *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = config->data.query_thread_count;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_optimize_thread_count(
+    const zvec_db_config_t *config, uint32_t *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = config->data.optimize_thread_count;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_invert_to_forward_scan_ratio(
+    const zvec_db_config_t *config, float *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = config->data.invert_to_forward_scan_ratio;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_brute_force_by_keys_ratio(
+    const zvec_db_config_t *config, float *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  *out_value = config->data.brute_force_by_keys_ratio;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_logger_type(
+    const zvec_db_config_t *config, zvec_db_log_type_t *out_type) {
+  if (!config || !out_type)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!config->data.log_config) {
+    *out_type = ZVEC_DB_LOG_TYPE_NONE;
+    return ZVEC_STATUS_OK;
+  }
+  const std::string t = config->data.log_config->GetLoggerType();
+  if (t == zvec::CONSOLE_LOG_TYPE_NAME)
+    *out_type = ZVEC_DB_LOG_TYPE_CONSOLE;
+  else if (t == zvec::FILE_LOG_TYPE_NAME)
+    *out_type = ZVEC_DB_LOG_TYPE_FILE;
+  else
+    *out_type = ZVEC_DB_LOG_TYPE_NONE;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_log_level(
+    const zvec_db_config_t *config, zvec_db_log_level_t *out_level) {
+  if (!config || !out_level)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!config->data.log_config) {
+    *out_level = ZVEC_DB_LOG_WARN;
+    return ZVEC_STATUS_OK;
+  }
+  *out_level = static_cast<zvec_db_log_level_t>(
+      config->data.log_config->level);
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_log_dir(
+    const zvec_db_config_t *config, char **out_dir) {
+  if (!config || !out_dir)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *fc = dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(
+      config->data.log_config.get());
+  const std::string &val = fc ? fc->dir : zvec::DEFAULT_LOG_DIR;
+  char *p = dup_string(val);
+  if (!p) return set_error("allocation failed");
+  *out_dir = p;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_log_basename(
+    const zvec_db_config_t *config, char **out_basename) {
+  if (!config || !out_basename)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *fc = dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(
+      config->data.log_config.get());
+  const std::string &val = fc ? fc->basename : zvec::DEFAULT_LOG_BASENAME;
+  char *p = dup_string(val);
+  if (!p) return set_error("allocation failed");
+  *out_basename = p;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_log_file_size_mb(
+    const zvec_db_config_t *config, uint32_t *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *fc = dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(
+      config->data.log_config.get());
+  *out_value = fc ? fc->file_size : zvec::DEFAULT_LOG_FILE_SIZE;
+  return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_db_config_get_log_overdue_days(
+    const zvec_db_config_t *config, uint32_t *out_value) {
+  if (!config || !out_value)
+    return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  const auto *fc = dynamic_cast<const zvec::GlobalConfig::FileLogConfig *>(
+      config->data.log_config.get());
+  *out_value = fc ? fc->overdue_days : zvec::DEFAULT_LOG_OVERDUE_DAYS;
+  return ZVEC_STATUS_OK;
+}
+
 extern "C" int zvec_ailego_string_starts_with(
     const char *ref,
     const char *prefix) {
@@ -4354,8 +4501,706 @@ extern "C" void zvec_ailego_string_split_free(char **items, size_t count) {
 }
 
 // =============================================================
-// zvec_db_query_t — missing getters
+// Ailego — string parse / convert / concat
 // =============================================================
+
+extern "C" int zvec_ailego_string_to_int8(const char *str, int8_t *out) {
+  if (!str || !out) return 0;
+  int8_t v{}; bool ok = zvec::ailego::StringHelper::ToInt8(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_int16(const char *str, int16_t *out) {
+  if (!str || !out) return 0;
+  int16_t v{}; bool ok = zvec::ailego::StringHelper::ToInt16(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_int32(const char *str, int32_t *out) {
+  if (!str || !out) return 0;
+  int32_t v{}; bool ok = zvec::ailego::StringHelper::ToInt32(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_int64(const char *str, int64_t *out) {
+  if (!str || !out) return 0;
+  int64_t v{}; bool ok = zvec::ailego::StringHelper::ToInt64(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_uint8(const char *str, uint8_t *out) {
+  if (!str || !out) return 0;
+  uint8_t v{}; bool ok = zvec::ailego::StringHelper::ToUint8(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_uint16(const char *str, uint16_t *out) {
+  if (!str || !out) return 0;
+  uint16_t v{}; bool ok = zvec::ailego::StringHelper::ToUint16(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_uint32(const char *str, uint32_t *out) {
+  if (!str || !out) return 0;
+  uint32_t v{}; bool ok = zvec::ailego::StringHelper::ToUint32(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_uint64(const char *str, uint64_t *out) {
+  if (!str || !out) return 0;
+  uint64_t v{}; bool ok = zvec::ailego::StringHelper::ToUint64(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_float(const char *str, float *out) {
+  if (!str || !out) return 0;
+  float v{}; bool ok = zvec::ailego::StringHelper::ToFloat(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+extern "C" int zvec_ailego_string_to_double(const char *str, double *out) {
+  if (!str || !out) return 0;
+  double v{}; bool ok = zvec::ailego::StringHelper::ToDouble(str, &v);
+  if (ok) *out = v; return ok ? 1 : 0;
+}
+
+extern "C" zvec_status_t zvec_ailego_string_from_int32(int32_t val, char **out) {
+  if (!out) return set_error("out is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::ToString(val));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_from_int64(int64_t val, char **out) {
+  if (!out) return set_error("out is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::ToString(val));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_from_uint32(uint32_t val, char **out) {
+  if (!out) return set_error("out is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::ToString(val));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_from_uint64(uint64_t val, char **out) {
+  if (!out) return set_error("out is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::ToString(val));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_from_float(float val, char **out) {
+  if (!out) return set_error("out is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::ToString(val));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_from_double(double val, char **out) {
+  if (!out) return set_error("out is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::ToString(val));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+
+extern "C" zvec_status_t zvec_ailego_string_concat2(
+    const char *a, const char *b, char **out) {
+  if (!a || !b || !out) return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::Concat(a, b));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_concat3(
+    const char *a, const char *b, const char *c, char **out) {
+  if (!a || !b || !c || !out) return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::Concat(a, b, c));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_string_concat4(
+    const char *a, const char *b, const char *c, const char *d, char **out) {
+  if (!a || !b || !c || !d || !out) return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  char *p = dup_string(zvec::ailego::StringHelper::Concat(a, b, c, d));
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+
+// =============================================================
+// Ailego — Monotime
+// =============================================================
+
+extern "C" uint64_t zvec_ailego_monotime_nanoseconds(void) {
+  return zvec::ailego::Monotime::NanoSeconds();
+}
+extern "C" uint64_t zvec_ailego_monotime_microseconds(void) {
+  return zvec::ailego::Monotime::MicroSeconds();
+}
+extern "C" uint64_t zvec_ailego_monotime_milliseconds(void) {
+  return zvec::ailego::Monotime::MilliSeconds();
+}
+extern "C" uint64_t zvec_ailego_monotime_seconds(void) {
+  return zvec::ailego::Monotime::Seconds();
+}
+
+// =============================================================
+// Ailego — Realtime
+// =============================================================
+
+extern "C" uint64_t zvec_ailego_realtime_nanoseconds(void) {
+  return zvec::ailego::Realtime::NanoSeconds();
+}
+extern "C" uint64_t zvec_ailego_realtime_microseconds(void) {
+  return zvec::ailego::Realtime::MicroSeconds();
+}
+extern "C" uint64_t zvec_ailego_realtime_milliseconds(void) {
+  return zvec::ailego::Realtime::MilliSeconds();
+}
+extern "C" uint64_t zvec_ailego_realtime_seconds(void) {
+  return zvec::ailego::Realtime::Seconds();
+}
+extern "C" size_t zvec_ailego_realtime_localtime_fmt(
+    uint64_t stamp, const char *format, char *buf, size_t len) {
+  if (!format || !buf || len == 0) return 0;
+  return zvec::ailego::Realtime::Localtime(stamp, format, buf, len);
+}
+extern "C" size_t zvec_ailego_realtime_gmtime_fmt(
+    uint64_t stamp, const char *format, char *buf, size_t len) {
+  if (!format || !buf || len == 0) return 0;
+  return zvec::ailego::Realtime::Gmtime(stamp, format, buf, len);
+}
+extern "C" size_t zvec_ailego_realtime_localtime(char *buf, size_t len) {
+  if (!buf || len == 0) return 0;
+  return zvec::ailego::Realtime::Localtime(buf, len);
+}
+extern "C" size_t zvec_ailego_realtime_gmtime(char *buf, size_t len) {
+  if (!buf || len == 0) return 0;
+  return zvec::ailego::Realtime::Gmtime(buf, len);
+}
+
+// =============================================================
+// Ailego — CPUtime
+// =============================================================
+
+extern "C" uint64_t zvec_ailego_cputime_nanoseconds(void) {
+  return zvec::ailego::CPUtime::NanoSeconds();
+}
+extern "C" uint64_t zvec_ailego_cputime_microseconds(void) {
+  return zvec::ailego::CPUtime::MicroSeconds();
+}
+extern "C" uint64_t zvec_ailego_cputime_milliseconds(void) {
+  return zvec::ailego::CPUtime::MilliSeconds();
+}
+extern "C" uint64_t zvec_ailego_cputime_seconds(void) {
+  return zvec::ailego::CPUtime::Seconds();
+}
+
+// =============================================================
+// Ailego — FloatHelper  (FP16 <-> FP32 conversions)
+// =============================================================
+
+extern "C" float zvec_ailego_fp16_to_fp32(uint16_t val) {
+  return zvec::ailego::FloatHelper::ToFP32(val);
+}
+extern "C" uint16_t zvec_ailego_fp32_to_fp16(float val) {
+  return zvec::ailego::FloatHelper::ToFP16(val);
+}
+extern "C" void zvec_ailego_fp16_array_to_fp32(
+    const uint16_t *in, size_t n, float *out) {
+  if (in && out && n) zvec::ailego::FloatHelper::ToFP32(in, n, out);
+}
+extern "C" void zvec_ailego_fp32_array_to_fp16(
+    const float *in, size_t n, uint16_t *out) {
+  if (in && out && n) zvec::ailego::FloatHelper::ToFP16(in, n, out);
+}
+// normalised variants
+extern "C" void zvec_ailego_fp16_array_to_fp32_norm(
+    const uint16_t *in, size_t n, float norm, float *out) {
+  if (in && out && n) zvec::ailego::FloatHelper::ToFP32(in, n, norm, out);
+}
+extern "C" void zvec_ailego_fp32_array_to_fp16_norm(
+    const float *in, size_t n, float norm, uint16_t *out) {
+  if (in && out && n) zvec::ailego::FloatHelper::ToFP16(in, n, norm, out);
+}
+
+// =============================================================
+// Ailego — BloomFilterCalculator  (pure math, no object needed)
+// =============================================================
+
+// False-positive probability for n items, m bits, k hash functions
+extern "C" double zvec_ailego_bloom_probability(size_t n, size_t m, size_t k) {
+  if (k == 0 || m == 0) return 1.0;
+  return zvec::ailego::BloomFilterCalculator::Probability(n, m, k);
+}
+// Number of items that fit in a filter with m bits, k hashes, target prob p
+extern "C" size_t zvec_ailego_bloom_number_of_items(
+    size_t m, size_t k, double p) {
+  if (k == 0 || m == 0 || p <= 0.0 || p >= 1.0) return 0;
+  return zvec::ailego::BloomFilterCalculator::NumberOfItems(m, k, p);
+}
+// Number of bits needed for n items and false-positive probability p
+extern "C" size_t zvec_ailego_bloom_number_of_bits(size_t n, double p) {
+  if (n == 0 || p <= 0.0 || p >= 1.0) return 0;
+  return zvec::ailego::BloomFilterCalculator::NumberOfBits(n, p);
+}
+// Number of bytes needed for n items and false-positive probability p
+extern "C" size_t zvec_ailego_bloom_number_of_bytes(size_t n, double p) {
+  if (n == 0 || p <= 0.0 || p >= 1.0) return 0;
+  return zvec::ailego::BloomFilterCalculator::NumberOfBytes(n, p);
+}
+// Optimal number of hash functions for n items in m bits
+extern "C" size_t zvec_ailego_bloom_number_of_hash(size_t n, size_t m) {
+  if (n == 0 || m == 0) return 0;
+  return zvec::ailego::BloomFilterCalculator::NumberOfHash(n, m);
+}
+
+// =============================================================
+// Ailego — Hash: Crc32c
+// =============================================================
+
+extern "C" uint32_t zvec_ailego_crc32c(
+    const void *data, size_t len, uint32_t crc) {
+  if (!data || len == 0) return crc;
+  return zvec::ailego::Crc32c::Hash(data, len, crc);
+}
+// Convenience: seed=0
+extern "C" uint32_t zvec_ailego_crc32c_hash(const void *data, size_t len) {
+  if (!data || len == 0) return 0;
+  return zvec::ailego::Crc32c::Hash(data, len);
+}
+
+// =============================================================
+// Ailego — Hash: JumpHash
+// =============================================================
+
+extern "C" int32_t zvec_ailego_jump_hash(uint64_t key, int32_t num_buckets) {
+  return zvec::ailego::JumpHash(key, num_buckets);
+}
+
+// =============================================================
+// Ailego — Encoding: JSON  (JsonValue parse / stringify)
+// =============================================================
+
+// Opaque wrapper around a JsonValue
+struct zvec_ailego_json { zvec::ailego::JsonValue value; };
+
+extern "C" zvec_ailego_json_t *zvec_ailego_json_parse(const char *text) {
+  if (!text) return nullptr;
+  try {
+    auto *j = new zvec_ailego_json{};
+    if (!j->value.parse(text)) { delete j; return nullptr; }
+    return j;
+  } catch (...) { return nullptr; }
+}
+extern "C" void zvec_ailego_json_destroy(zvec_ailego_json_t *j) { delete j; }
+
+// Stringify to a malloc'd C string; caller frees with zvec_free()
+extern "C" zvec_status_t zvec_ailego_json_stringify(
+    const zvec_ailego_json_t *j, char **out) {
+  if (!j || !out) return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  try {
+    std::string s = j->value.as_json_string().as_stl_string();
+    char *p = dup_string(s);
+    if (!p) return set_error("allocation failed");
+    *out = p; return ZVEC_STATUS_OK;
+  } catch (const std::exception &e) { return set_error(e.what()); }
+}
+
+// Type predicates
+extern "C" int zvec_ailego_json_is_object (const zvec_ailego_json_t *j) { return j && j->value.is_object()   ? 1 : 0; }
+extern "C" int zvec_ailego_json_is_array  (const zvec_ailego_json_t *j) { return j && j->value.is_array()    ? 1 : 0; }
+extern "C" int zvec_ailego_json_is_string (const zvec_ailego_json_t *j) { return j && j->value.is_string()   ? 1 : 0; }
+extern "C" int zvec_ailego_json_is_integer(const zvec_ailego_json_t *j) { return j && j->value.is_integer()  ? 1 : 0; }
+extern "C" int zvec_ailego_json_is_float  (const zvec_ailego_json_t *j) { return j && j->value.is_float()    ? 1 : 0; }
+extern "C" int zvec_ailego_json_is_bool   (const zvec_ailego_json_t *j) { return j && j->value.is_boolean()  ? 1 : 0; }
+extern "C" int zvec_ailego_json_is_null   (const zvec_ailego_json_t *j) { return j && j->value.is_null()     ? 1 : 0; }
+
+// Scalar getters
+extern "C" int64_t zvec_ailego_json_get_integer(const zvec_ailego_json_t *j) {
+  return j ? (int64_t)j->value.as_integer() : 0;
+}
+extern "C" double zvec_ailego_json_get_float(const zvec_ailego_json_t *j) {
+  return j ? (double)j->value.as_float() : 0.0;
+}
+extern "C" int zvec_ailego_json_get_bool(const zvec_ailego_json_t *j) {
+  return j ? (j->value.as_bool() ? 1 : 0) : 0;
+}
+// Returns malloc'd string; caller frees with zvec_free()
+extern "C" zvec_status_t zvec_ailego_json_get_string(
+    const zvec_ailego_json_t *j, char **out) {
+  if (!j || !out) return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!j->value.is_string()) return set_error("json value is not a string");
+  char *p = dup_string(j->value.as_string().c_str());
+  if (!p) return set_error("allocation failed");
+  *out = p; return ZVEC_STATUS_OK;
+}
+
+// Object access — returns a newly allocated child JsonValue wrapper or NULL
+extern "C" zvec_ailego_json_t *zvec_ailego_json_object_get(
+    const zvec_ailego_json_t *j, const char *key) {
+  if (!j || !key || !j->value.is_object()) return nullptr;
+  try {
+    auto child = j->value[key];
+    if (!child.is_valid()) return nullptr;
+    return new zvec_ailego_json{child};
+  } catch (...) { return nullptr; }
+}
+extern "C" size_t zvec_ailego_json_object_size(const zvec_ailego_json_t *j) {
+  if (!j || !j->value.is_object()) return 0;
+  try { return j->value.as_object().size(); } catch (...) { return 0; }
+}
+
+// Array access
+extern "C" zvec_ailego_json_t *zvec_ailego_json_array_get(
+    const zvec_ailego_json_t *j, size_t idx) {
+  if (!j || !j->value.is_array()) return nullptr;
+  try {
+    const auto &arr = j->value.as_array();
+    if (idx >= (size_t)arr.size()) return nullptr;
+    return new zvec_ailego_json{j->value[(int)idx]};
+  } catch (...) { return nullptr; }
+}
+extern "C" size_t zvec_ailego_json_array_size(const zvec_ailego_json_t *j) {
+  if (!j || !j->value.is_array()) return 0;
+  try { return j->value.as_array().size(); } catch (...) { return 0; }
+}
+
+// =============================================================
+// Ailego — IO: File  (raw file I/O)
+// =============================================================
+
+struct zvec_ailego_file { zvec::ailego::File f; };
+
+extern "C" zvec_ailego_file_t *zvec_ailego_file_open(
+    const char *path, int rdonly, int direct) {
+  if (!path) return nullptr;
+  auto *w = new zvec_ailego_file{};
+  if (!w->f.open(path, rdonly != 0, direct != 0)) { delete w; return nullptr; }
+  return w;
+}
+extern "C" zvec_ailego_file_t *zvec_ailego_file_create(
+    const char *path, size_t size, int direct) {
+  if (!path) return nullptr;
+  auto *w = new zvec_ailego_file{};
+  if (!w->f.create(path, size, direct != 0)) { delete w; return nullptr; }
+  return w;
+}
+extern "C" void zvec_ailego_file_close(zvec_ailego_file_t *f) { delete f; }
+
+extern "C" size_t zvec_ailego_file_write(
+    zvec_ailego_file_t *f, const void *data, size_t len) {
+  return (f && data) ? f->f.write(data, len) : 0;
+}
+extern "C" size_t zvec_ailego_file_write_at(
+    zvec_ailego_file_t *f, ssize_t off, const void *data, size_t len) {
+  return (f && data) ? f->f.write(off, data, len) : 0;
+}
+extern "C" size_t zvec_ailego_file_read(
+    zvec_ailego_file_t *f, void *buf, size_t len) {
+  return (f && buf) ? f->f.read(buf, len) : 0;
+}
+extern "C" size_t zvec_ailego_file_read_at(
+    zvec_ailego_file_t *f, ssize_t off, void *buf, size_t len) {
+  return (f && buf) ? f->f.read(off, buf, len) : 0;
+}
+extern "C" int zvec_ailego_file_flush_io(zvec_ailego_file_t *f) {
+  return (f && f->f.flush()) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_seek(
+    zvec_ailego_file_t *f, ssize_t off, int origin) {
+  if (!f) return 0;
+  return f->f.seek(off, static_cast<zvec::ailego::File::Origin>(origin)) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_truncate(zvec_ailego_file_t *f, size_t len) {
+  return (f && f->f.truncate(len)) ? 1 : 0;
+}
+extern "C" size_t zvec_ailego_file_get_file_size(zvec_ailego_file_t *f) {
+  return f ? f->f.size() : 0;
+}
+extern "C" ssize_t zvec_ailego_file_offset(zvec_ailego_file_t *f) {
+  return f ? f->f.offset() : -1;
+}
+// Memory-mapping via the File class
+extern "C" void *zvec_ailego_file_mmap(
+    zvec_ailego_file_t *f, ssize_t off, size_t len, int opts) {
+  return f ? f->f.map(off, len, opts) : nullptr;
+}
+extern "C" void zvec_ailego_file_munmap(void *addr, size_t len) {
+  zvec::ailego::File::MemoryUnmap(addr, len);
+}
+extern "C" int zvec_ailego_file_mflush(void *addr, size_t len) {
+  return zvec::ailego::File::MemoryFlush(addr, len) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_mlock(void *addr, size_t len) {
+  return zvec::ailego::File::MemoryLock(addr, len) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_munlock(void *addr, size_t len) {
+  return zvec::ailego::File::MemoryUnlock(addr, len) ? 1 : 0;
+}
+
+// =============================================================
+// Ailego — IO: MMapFile  (whole-file memory-mapped I/O)
+// =============================================================
+
+struct zvec_ailego_mmap_file { zvec::ailego::MMapFile f; };
+
+extern "C" zvec_ailego_mmap_file_t *zvec_ailego_mmap_open(
+    const char *path, int rdonly, int shared) {
+  if (!path) return nullptr;
+  auto *w = new zvec_ailego_mmap_file{};
+  if (!w->f.open(path, rdonly != 0, shared != 0)) { delete w; return nullptr; }
+  return w;
+}
+extern "C" zvec_ailego_mmap_file_t *zvec_ailego_mmap_create(
+    const char *path, size_t len) {
+  if (!path) return nullptr;
+  auto *w = new zvec_ailego_mmap_file{};
+  if (!w->f.create(path, len)) { delete w; return nullptr; }
+  return w;
+}
+extern "C" void zvec_ailego_mmap_close(zvec_ailego_mmap_file_t *f) { delete f; }
+extern "C" int  zvec_ailego_mmap_flush(zvec_ailego_mmap_file_t *f) {
+  return (f && f->f.flush()) ? 1 : 0;
+}
+extern "C" int  zvec_ailego_mmap_lock(zvec_ailego_mmap_file_t *f) {
+  return (f && f->f.lock()) ? 1 : 0;
+}
+extern "C" int  zvec_ailego_mmap_unlock(zvec_ailego_mmap_file_t *f) {
+  return (f && f->f.unlock()) ? 1 : 0;
+}
+extern "C" void *zvec_ailego_mmap_region(zvec_ailego_mmap_file_t *f) {
+  return f ? f->f.region() : nullptr;
+}
+extern "C" size_t zvec_ailego_mmap_region_size(zvec_ailego_mmap_file_t *f) {
+  return f ? f->f.size() : 0;
+}
+
+// =============================================================
+// Ailego — Logger  (LoggerBroker: set level, log a message)
+// =============================================================
+
+extern "C" void zvec_ailego_logger_set_level(int level) {
+  zvec::ailego::LoggerBroker::SetLevel(level);
+}
+extern "C" int zvec_ailego_logger_is_level_enabled(int level) {
+  return zvec::ailego::LoggerBroker::IsLevelEnabled(level) ? 1 : 0;
+}
+// Log a pre-formatted message at the given level
+extern "C" void zvec_ailego_logger_log(
+    int level, const char *file, int line, const char *message) {
+  if (!zvec::ailego::LoggerBroker::IsLevelEnabled(level)) return;
+  zvec::ailego::LoggerBroker::Log(level, file ? file : "", line,
+                                  "%s", message ? message : "");
+}
+// Numeric level constants (mirrors Logger::LEVEL_*)
+extern "C" int zvec_ailego_logger_level_debug(void) { return zvec::ailego::Logger::LEVEL_DEBUG; }
+extern "C" int zvec_ailego_logger_level_info (void) { return zvec::ailego::Logger::LEVEL_INFO;  }
+extern "C" int zvec_ailego_logger_level_warn (void) { return zvec::ailego::Logger::LEVEL_WARN;  }
+extern "C" int zvec_ailego_logger_level_error(void) { return zvec::ailego::Logger::LEVEL_ERROR; }
+extern "C" int zvec_ailego_logger_level_fatal(void) { return zvec::ailego::Logger::LEVEL_FATAL; }
+
+
+extern "C" size_t zvec_ailego_memory_huge_page_size(void) {
+  return zvec::ailego::MemoryHelper::HugePageSize();
+}
+extern "C" int zvec_ailego_memory_self_usage(size_t *out_vsz, size_t *out_rss) {
+  if (!out_vsz || !out_rss) return 0;
+  return zvec::ailego::MemoryHelper::SelfUsage(out_vsz, out_rss) ? 1 : 0;
+}
+extern "C" size_t zvec_ailego_memory_self_rss(void) {
+  return zvec::ailego::MemoryHelper::SelfRSS();
+}
+extern "C" size_t zvec_ailego_memory_self_peak_rss(void) {
+  return zvec::ailego::MemoryHelper::SelfPeakRSS();
+}
+extern "C" size_t zvec_ailego_memory_total_ram(void) {
+  return zvec::ailego::MemoryHelper::TotalRamSize();
+}
+extern "C" size_t zvec_ailego_memory_available_ram(void) {
+  return zvec::ailego::MemoryHelper::AvailableRamSize();
+}
+extern "C" size_t zvec_ailego_memory_used_ram(void) {
+  return zvec::ailego::MemoryHelper::UsedRamSize();
+}
+extern "C" size_t zvec_ailego_memory_container_total_ram(void) {
+  return zvec::ailego::MemoryHelper::ContainerAwareTotalRamSize();
+}
+
+// =============================================================
+// Ailego — FileHelper
+// =============================================================
+
+extern "C" zvec_status_t zvec_ailego_file_get_self_path(char **out_path) {
+  if (!out_path) return set_error("out_path is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  std::string path;
+  if (!zvec::ailego::FileHelper::GetSelfPath(&path))
+    return set_error("failed to get self path");
+  char *p = dup_string(path);
+  if (!p) return set_error("allocation failed");
+  *out_path = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_file_get_working_directory(char **out_path) {
+  if (!out_path) return set_error("out_path is null", ZVEC_STATUS_INVALID_ARGUMENT);
+  std::string path;
+  if (!zvec::ailego::FileHelper::GetWorkingDirectory(&path))
+    return set_error("failed to get working directory");
+  char *p = dup_string(path);
+  if (!p) return set_error("allocation failed");
+  *out_path = p; return ZVEC_STATUS_OK;
+}
+extern "C" zvec_status_t zvec_ailego_file_get_size(
+    const char *path, size_t *out_size) {
+  if (!path || !out_size) return set_error("invalid arguments", ZVEC_STATUS_INVALID_ARGUMENT);
+  if (!zvec::ailego::FileHelper::GetFileSize(path, out_size))
+    return set_error("failed to get file size");
+  return ZVEC_STATUS_OK;
+}
+extern "C" size_t zvec_ailego_file_size(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::FileSize(path);
+}
+extern "C" int zvec_ailego_file_delete(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::DeleteFile(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_rename(const char *oldpath, const char *newpath) {
+  if (!oldpath || !newpath) return 0;
+  return zvec::ailego::FileHelper::RenameFile(oldpath, newpath) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_make_path(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::MakePath(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_remove_path(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::RemovePath(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_remove_directory(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::RemoveDirectory(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_is_exist(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::IsExist(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_is_regular(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::IsRegular(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_is_directory(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::IsDirectory(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_is_symlink(const char *path) {
+  if (!path) return 0;
+  return zvec::ailego::FileHelper::IsSymbolicLink(path) ? 1 : 0;
+}
+extern "C" int zvec_ailego_file_is_same(const char *path1, const char *path2) {
+  if (!path1 || !path2) return 0;
+  return zvec::ailego::FileHelper::IsSame(path1, path2) ? 1 : 0;
+}
+extern "C" const char *zvec_ailego_file_basename(const char *path) {
+  if (!path) return nullptr;
+  return zvec::ailego::FileHelper::BaseName(path);
+}
+
+// =============================================================
+// Ailego — BitsetHelper (static ops on raw uint32_t arrays)
+// =============================================================
+
+extern "C" size_t zvec_ailego_bitset_cardinality(
+    const uint32_t *arr, size_t size) {
+  if (!arr) return 0;
+  return zvec::ailego::BitsetHelper::Cardinality(arr, size);
+}
+extern "C" size_t zvec_ailego_bitset_and_cardinality(
+    const uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (!lhs || !rhs) return 0;
+  return zvec::ailego::BitsetHelper::BitwiseAndCardinality(lhs, rhs, size);
+}
+extern "C" size_t zvec_ailego_bitset_or_cardinality(
+    const uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (!lhs || !rhs) return 0;
+  return zvec::ailego::BitsetHelper::BitwiseOrCardinality(lhs, rhs, size);
+}
+extern "C" size_t zvec_ailego_bitset_xor_cardinality(
+    const uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (!lhs || !rhs) return 0;
+  return zvec::ailego::BitsetHelper::BitwiseXorCardinality(lhs, rhs, size);
+}
+extern "C" size_t zvec_ailego_bitset_andnot_cardinality(
+    const uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (!lhs || !rhs) return 0;
+  return zvec::ailego::BitsetHelper::BitwiseAndnotCardinality(lhs, rhs, size);
+}
+extern "C" void zvec_ailego_bitset_and(
+    uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (lhs && rhs) zvec::ailego::BitsetHelper::BitwiseAnd(lhs, rhs, size);
+}
+extern "C" void zvec_ailego_bitset_or(
+    uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (lhs && rhs) zvec::ailego::BitsetHelper::BitwiseOr(lhs, rhs, size);
+}
+extern "C" void zvec_ailego_bitset_xor(
+    uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (lhs && rhs) zvec::ailego::BitsetHelper::BitwiseXor(lhs, rhs, size);
+}
+extern "C" void zvec_ailego_bitset_andnot(
+    uint32_t *lhs, const uint32_t *rhs, size_t size) {
+  if (lhs && rhs) zvec::ailego::BitsetHelper::BitwiseAndnot(lhs, rhs, size);
+}
+extern "C" void zvec_ailego_bitset_not(uint32_t *arr, size_t size) {
+  if (arr) zvec::ailego::BitsetHelper::BitwiseNot(arr, size);
+}
+extern "C" int zvec_ailego_bitset_test_all(const uint32_t *arr, size_t size) {
+  if (!arr) return 0;
+  return zvec::ailego::BitsetHelper::TestAll(arr, size) ? 1 : 0;
+}
+extern "C" int zvec_ailego_bitset_test_any(const uint32_t *arr, size_t size) {
+  if (!arr) return 0;
+  return zvec::ailego::BitsetHelper::TestAny(arr, size) ? 1 : 0;
+}
+extern "C" int zvec_ailego_bitset_test_none(const uint32_t *arr, size_t size) {
+  if (!arr) return 1;
+  return zvec::ailego::BitsetHelper::TestNone(arr, size) ? 1 : 0;
+}
+extern "C" size_t zvec_ailego_bitset_buffer_size(size_t num_bits) {
+  return zvec::ailego::BitsetHelper::BufferSize(num_bits);
+}
+extern "C" size_t zvec_ailego_bitset_bits_count(size_t buf_bytes) {
+  return zvec::ailego::BitsetHelper::BitsCount(buf_bytes);
+}
+extern "C" size_t zvec_ailego_bitset_extract(
+    const uint32_t *arr, size_t size,
+    size_t base_offset,
+    size_t *out_positions, size_t out_capacity) {
+  if (!arr || !out_positions || out_capacity == 0) return 0;
+  std::vector<size_t> positions;
+  positions.reserve(size * 8);
+  zvec::ailego::BitsetHelper tmp(const_cast<uint32_t *>(arr),
+                                  size * sizeof(uint32_t));
+  tmp.extract(base_offset, &positions);
+  size_t n = std::min(positions.size(), out_capacity);
+  for (size_t i = 0; i < n; ++i) out_positions[i] = positions[i];
+  return n;
+}
+
+// =============================================================
+// Ailego — ConcurrencyHelper
+// =============================================================
+
+extern "C" uint32_t zvec_ailego_concurrency(void) {
+  return zvec::ailego::ConcurrencyHelper::container_aware_concurrency();
+}
+
+// =============================================================
+// Ailego — DLHelper
+// =============================================================
+
+extern "C" void *zvec_ailego_dl_load(const char *path) {
+  if (!path) return nullptr;
+  std::string err;
+  void *handle = zvec::ailego::DLHelper::Load(path, &err);
+  if (!handle) set_error(err);
+  return handle;
+}
+extern "C" void zvec_ailego_dl_unload(void *handle) {
+  zvec::ailego::DLHelper::Unload(handle);
+}
+extern "C" void *zvec_ailego_dl_symbol(void *handle, const char *symbol) {
+  if (!handle || !symbol) return nullptr;
+  return zvec::ailego::DLHelper::Symbol(handle, symbol);
+}
+
+
 
 extern "C" zvec_status_t zvec_db_query_get_topk(
     const zvec_db_query_t *query, int *out_topk) {

@@ -2,15 +2,29 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#if defined(_WIN32) || defined(_WIN64)
+typedef ptrdiff_t ssize_t;
+#else
+#include <sys/types.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef enum {
-  ZVEC_STATUS_OK = 0,
-  ZVEC_STATUS_ERR = 1,
-  ZVEC_STATUS_INVALID_ARGUMENT = 2
+  ZVEC_STATUS_OK                = 0,  // StatusCode::OK
+  ZVEC_STATUS_NOT_FOUND         = 1,  // StatusCode::NOT_FOUND
+  ZVEC_STATUS_ALREADY_EXISTS    = 2,  // StatusCode::ALREADY_EXISTS
+  ZVEC_STATUS_INVALID_ARGUMENT  = 3,  // StatusCode::INVALID_ARGUMENT
+  ZVEC_STATUS_PERMISSION_DENIED = 4,  // StatusCode::PERMISSION_DENIED
+  ZVEC_STATUS_FAILED_PRECONDITION = 5, // StatusCode::FAILED_PRECONDITION
+  ZVEC_STATUS_RESOURCE_EXHAUSTED = 6, // StatusCode::RESOURCE_EXHAUSTED
+  ZVEC_STATUS_UNAVAILABLE       = 7,  // StatusCode::UNAVAILABLE
+  ZVEC_STATUS_INTERNAL_ERROR    = 8,  // StatusCode::INTERNAL_ERROR
+  ZVEC_STATUS_NOT_SUPPORTED     = 9,  // StatusCode::NOT_SUPPORTED
+  ZVEC_STATUS_UNKNOWN           = 10, // StatusCode::UNKNOWN
+  ZVEC_STATUS_ERR               = 11  // generic catch-all error
 } zvec_status_t;
 
 // Global error handling (thread-local).
@@ -1500,6 +1514,54 @@ zvec_status_t zvec_db_config_set_file_logger(
     uint32_t file_size_mb,
     uint32_t overdue_days);
 
+// ----- getters -----
+
+zvec_status_t zvec_db_config_get_memory_limit_bytes(
+    const zvec_db_config_t* config,
+    uint64_t* out_value);
+zvec_status_t zvec_db_config_get_query_thread_count(
+    const zvec_db_config_t* config,
+    uint32_t* out_value);
+zvec_status_t zvec_db_config_get_optimize_thread_count(
+    const zvec_db_config_t* config,
+    uint32_t* out_value);
+zvec_status_t zvec_db_config_get_invert_to_forward_scan_ratio(
+    const zvec_db_config_t* config,
+    float* out_value);
+zvec_status_t zvec_db_config_get_brute_force_by_keys_ratio(
+    const zvec_db_config_t* config,
+    float* out_value);
+
+// Logger type: 0 = none/unknown, 1 = console, 2 = file
+typedef enum {
+  ZVEC_DB_LOG_TYPE_NONE    = 0,
+  ZVEC_DB_LOG_TYPE_CONSOLE = 1,
+  ZVEC_DB_LOG_TYPE_FILE    = 2
+} zvec_db_log_type_t;
+
+// Returns the active logger type and its log level.
+zvec_status_t zvec_db_config_get_logger_type(
+    const zvec_db_config_t* config,
+    zvec_db_log_type_t* out_type);
+zvec_status_t zvec_db_config_get_log_level(
+    const zvec_db_config_t* config,
+    zvec_db_log_level_t* out_level);
+
+// File-logger specific getters (empty / 0 when console logger is active).
+// out_dir and out_basename are malloc'd — caller must free with zvec_free().
+zvec_status_t zvec_db_config_get_log_dir(
+    const zvec_db_config_t* config,
+    char** out_dir);
+zvec_status_t zvec_db_config_get_log_basename(
+    const zvec_db_config_t* config,
+    char** out_basename);
+zvec_status_t zvec_db_config_get_log_file_size_mb(
+    const zvec_db_config_t* config,
+    uint32_t* out_value);
+zvec_status_t zvec_db_config_get_log_overdue_days(
+    const zvec_db_config_t* config,
+    uint32_t* out_value);
+
 zvec_status_t zvec_db_global_config_init(
     const zvec_db_config_t* config);
 
@@ -1551,9 +1613,13 @@ zvec_status_t zvec_db_group_result_get_doc(
     zvec_db_doc_t** out_doc);
 void zvec_db_group_result_destroy(zvec_db_group_result_t* result);
 
-// -----------------------
+// =============================================================
 // Ailego interface (C API)
-// -----------------------
+// =============================================================
+
+// ---------------------------
+// StringHelper
+// ---------------------------
 
 int zvec_ailego_string_starts_with(const char* ref, const char* prefix);
 int zvec_ailego_string_ends_with(const char* ref, const char* suffix);
@@ -1575,6 +1641,234 @@ zvec_status_t zvec_ailego_string_split(
     char*** out_items,
     size_t* out_count);
 void zvec_ailego_string_split_free(char** items, size_t count);
+
+// Parse/convert string -> numeric
+int zvec_ailego_string_to_int8(const char* str, int8_t* out);
+int zvec_ailego_string_to_int16(const char* str, int16_t* out);
+int zvec_ailego_string_to_int32(const char* str, int32_t* out);
+int zvec_ailego_string_to_int64(const char* str, int64_t* out);
+int zvec_ailego_string_to_uint8(const char* str, uint8_t* out);
+int zvec_ailego_string_to_uint16(const char* str, uint16_t* out);
+int zvec_ailego_string_to_uint32(const char* str, uint32_t* out);
+int zvec_ailego_string_to_uint64(const char* str, uint64_t* out);
+int zvec_ailego_string_to_float(const char* str, float* out);
+int zvec_ailego_string_to_double(const char* str, double* out);
+
+// Convert numeric -> string (caller frees with zvec_free)
+zvec_status_t zvec_ailego_string_from_int32(int32_t val, char** out);
+zvec_status_t zvec_ailego_string_from_int64(int64_t val, char** out);
+zvec_status_t zvec_ailego_string_from_uint32(uint32_t val, char** out);
+zvec_status_t zvec_ailego_string_from_uint64(uint64_t val, char** out);
+zvec_status_t zvec_ailego_string_from_float(float val, char** out);
+zvec_status_t zvec_ailego_string_from_double(double val, char** out);
+
+// String concatenation (caller frees result with zvec_free)
+// Concatenate up to 4 string segments into one allocation.
+zvec_status_t zvec_ailego_string_concat2(
+    const char* a, const char* b, char** out);
+zvec_status_t zvec_ailego_string_concat3(
+    const char* a, const char* b, const char* c, char** out);
+zvec_status_t zvec_ailego_string_concat4(
+    const char* a, const char* b, const char* c, const char* d, char** out);
+
+// ---------------------------
+// Monotime (monotonic clock)
+// ---------------------------
+
+uint64_t zvec_ailego_monotime_nanoseconds(void);
+uint64_t zvec_ailego_monotime_microseconds(void);
+uint64_t zvec_ailego_monotime_milliseconds(void);
+uint64_t zvec_ailego_monotime_seconds(void);
+
+// ---------------------------
+// Realtime (wall clock)
+// ---------------------------
+
+uint64_t zvec_ailego_realtime_nanoseconds(void);
+uint64_t zvec_ailego_realtime_microseconds(void);
+uint64_t zvec_ailego_realtime_milliseconds(void);
+uint64_t zvec_ailego_realtime_seconds(void);
+
+size_t zvec_ailego_realtime_localtime_fmt(
+    uint64_t stamp, const char* format, char* buf, size_t len);
+size_t zvec_ailego_realtime_gmtime_fmt(
+    uint64_t stamp, const char* format, char* buf, size_t len);
+size_t zvec_ailego_realtime_localtime(char* buf, size_t len);
+size_t zvec_ailego_realtime_gmtime(char* buf, size_t len);
+
+// ---------------------------
+// CPUtime (thread CPU clock)
+// ---------------------------
+
+uint64_t zvec_ailego_cputime_nanoseconds(void);
+uint64_t zvec_ailego_cputime_microseconds(void);
+uint64_t zvec_ailego_cputime_milliseconds(void);
+uint64_t zvec_ailego_cputime_seconds(void);
+
+// ---------------------------
+// FloatHelper  (FP16 <-> FP32)
+// ---------------------------
+
+// Single value conversions
+float    zvec_ailego_fp16_to_fp32(uint16_t val);
+uint16_t zvec_ailego_fp32_to_fp16(float val);
+
+// Array conversions (in/out must be pre-allocated by caller)
+void zvec_ailego_fp16_array_to_fp32(const uint16_t* in, size_t n, float* out);
+void zvec_ailego_fp32_array_to_fp16(const float* in, size_t n, uint16_t* out);
+
+// Normalised variants: fp16→fp32 divides by norm; fp32→fp16 divides before conversion
+void zvec_ailego_fp16_array_to_fp32_norm(
+    const uint16_t* in, size_t n, float norm, float* out);
+void zvec_ailego_fp32_array_to_fp16_norm(
+    const float* in, size_t n, float norm, uint16_t* out);
+
+// ---------------------------
+// BloomFilterCalculator  (pure math helpers)
+// ---------------------------
+
+// False-positive probability for n items, m bits, k hash functions
+double zvec_ailego_bloom_probability(size_t n, size_t m, size_t k);
+
+// Max items in a filter with m bits, k hashes, target false-positive rate p
+size_t zvec_ailego_bloom_number_of_items(size_t m, size_t k, double p);
+
+// Number of bits / bytes needed for n items at false-positive rate p
+size_t zvec_ailego_bloom_number_of_bits (size_t n, double p);
+size_t zvec_ailego_bloom_number_of_bytes(size_t n, double p);
+
+// Optimal number of hash functions for n items in m bits
+size_t zvec_ailego_bloom_number_of_hash(size_t n, size_t m);
+
+// ---------------------------
+// Hash: Crc32c
+// ---------------------------
+
+// Compute CRC32C checksum with a running crc seed
+uint32_t zvec_ailego_crc32c(const void* data, size_t len, uint32_t crc);
+
+// Convenience: seed = 0
+uint32_t zvec_ailego_crc32c_hash(const void* data, size_t len);
+
+// ---------------------------
+// Hash: JumpHash  (consistent hashing)
+// ---------------------------
+
+int32_t zvec_ailego_jump_hash(uint64_t key, int32_t num_buckets);
+
+// ---------------------------
+// Encoding: JSON
+// Opaque handle wrapping a JsonValue.
+// ---------------------------
+
+typedef struct zvec_ailego_json zvec_ailego_json_t;
+
+// Parse a JSON text string into a JsonValue; returns NULL on parse error.
+zvec_ailego_json_t* zvec_ailego_json_parse(const char* text);
+void zvec_ailego_json_destroy(zvec_ailego_json_t* j);
+
+// Serialize to a malloc'd C string (caller frees with zvec_free()).
+zvec_status_t zvec_ailego_json_stringify(
+    const zvec_ailego_json_t* j, char** out);
+
+// Type predicates
+int zvec_ailego_json_is_object (const zvec_ailego_json_t* j);
+int zvec_ailego_json_is_array  (const zvec_ailego_json_t* j);
+int zvec_ailego_json_is_string (const zvec_ailego_json_t* j);
+int zvec_ailego_json_is_integer(const zvec_ailego_json_t* j);
+int zvec_ailego_json_is_float  (const zvec_ailego_json_t* j);
+int zvec_ailego_json_is_bool   (const zvec_ailego_json_t* j);
+int zvec_ailego_json_is_null   (const zvec_ailego_json_t* j);
+
+// Scalar getters
+int64_t zvec_ailego_json_get_integer(const zvec_ailego_json_t* j);
+double  zvec_ailego_json_get_float  (const zvec_ailego_json_t* j);
+int     zvec_ailego_json_get_bool   (const zvec_ailego_json_t* j);
+
+// String getter — returns malloc'd string; caller frees with zvec_free().
+zvec_status_t zvec_ailego_json_get_string(
+    const zvec_ailego_json_t* j, char** out);
+
+// Object / array access — returns a newly allocated child node or NULL.
+// Caller must destroy returned node with zvec_ailego_json_destroy().
+zvec_ailego_json_t* zvec_ailego_json_object_get(
+    const zvec_ailego_json_t* j, const char* key);
+size_t zvec_ailego_json_object_size(const zvec_ailego_json_t* j);
+
+zvec_ailego_json_t* zvec_ailego_json_array_get(
+    const zvec_ailego_json_t* j, size_t idx);
+size_t zvec_ailego_json_array_size(const zvec_ailego_json_t* j);
+
+// ---------------------------
+// IO: File  (raw file I/O with optional O_DIRECT)
+// ---------------------------
+
+typedef struct zvec_ailego_file zvec_ailego_file_t;
+
+// Open / create; returns NULL on failure.
+zvec_ailego_file_t* zvec_ailego_file_open(
+    const char* path, int rdonly, int direct);
+zvec_ailego_file_t* zvec_ailego_file_create(
+    const char* path, size_t size, int direct);
+void zvec_ailego_file_close(zvec_ailego_file_t* f);
+
+// Sequential read / write; return bytes transferred.
+size_t zvec_ailego_file_write(
+    zvec_ailego_file_t* f, const void* data, size_t len);
+size_t zvec_ailego_file_write_at(
+    zvec_ailego_file_t* f, ssize_t off, const void* data, size_t len);
+size_t zvec_ailego_file_read(
+    zvec_ailego_file_t* f, void* buf, size_t len);
+size_t zvec_ailego_file_read_at(
+    zvec_ailego_file_t* f, ssize_t off, void* buf, size_t len);
+
+int    zvec_ailego_file_flush_io  (zvec_ailego_file_t* f);
+// origin: 0=Begin 1=Current 2=End
+int    zvec_ailego_file_seek      (zvec_ailego_file_t* f, ssize_t off, int origin);
+int    zvec_ailego_file_truncate  (zvec_ailego_file_t* f, size_t len);
+size_t zvec_ailego_file_get_file_size(zvec_ailego_file_t* f);
+ssize_t zvec_ailego_file_offset   (zvec_ailego_file_t* f);
+
+// Memory mapping helpers (addr returned by mmap must be unmapped by caller)
+void*  zvec_ailego_file_mmap   (zvec_ailego_file_t* f, ssize_t off, size_t len, int opts);
+void   zvec_ailego_file_munmap (void* addr, size_t len);
+int    zvec_ailego_file_mflush (void* addr, size_t len);
+int    zvec_ailego_file_mlock  (void* addr, size_t len);
+int    zvec_ailego_file_munlock(void* addr, size_t len);
+
+// ---------------------------
+// IO: MMapFile  (whole-file memory-mapped I/O)
+// ---------------------------
+
+typedef struct zvec_ailego_mmap_file zvec_ailego_mmap_file_t;
+
+zvec_ailego_mmap_file_t* zvec_ailego_mmap_open  (const char* path, int rdonly, int shared);
+zvec_ailego_mmap_file_t* zvec_ailego_mmap_create(const char* path, size_t len);
+void   zvec_ailego_mmap_close      (zvec_ailego_mmap_file_t* f);
+int    zvec_ailego_mmap_flush      (zvec_ailego_mmap_file_t* f);
+int    zvec_ailego_mmap_lock       (zvec_ailego_mmap_file_t* f);
+int    zvec_ailego_mmap_unlock     (zvec_ailego_mmap_file_t* f);
+void*  zvec_ailego_mmap_region     (zvec_ailego_mmap_file_t* f);
+size_t zvec_ailego_mmap_region_size(zvec_ailego_mmap_file_t* f);
+
+// ---------------------------
+// Logger  (LoggerBroker)
+// ---------------------------
+
+// Set / query log level
+void zvec_ailego_logger_set_level       (int level);
+int  zvec_ailego_logger_is_level_enabled(int level);
+
+// Emit a pre-formatted log message
+void zvec_ailego_logger_log(int level, const char* file, int line,
+                            const char* message);
+
+// Named level constants (return the int values of Logger::LEVEL_*)
+int zvec_ailego_logger_level_debug(void);
+int zvec_ailego_logger_level_info (void);
+int zvec_ailego_logger_level_warn (void);
+int zvec_ailego_logger_level_error(void);
+int zvec_ailego_logger_level_fatal(void);
 
 // =============================================================
 // zvec_db_query_t — missing getters
